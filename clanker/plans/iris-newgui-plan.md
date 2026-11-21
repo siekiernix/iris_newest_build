@@ -18,7 +18,7 @@ CONTRIBUTING section before writing a controller.
 | Branch `core-activity-counters` | On `main` (9d6c5d9e). Two commits: the disk/audio counters and the ignored KONA test. Pushed; PR techomancer/iris#797 open, CI green on the first commit. |
 | Branch `iris-newgui` | Rebased onto `core-activity-counters` (2026-11-21), so the counters are available here. Local only, never pushed. Holds this plan. |
 | GUI code | None. `iris-gui/` is the egui app unchanged. |
-| Mock-ups | **Not in the repository, by the user's decision; do not commit mock-ups or screenshots.** The user holds seven boards (stopped, running and settings in light and dark, and the macOS menu bar); ask for them if needed. They predate the feedback in [Design changes from feedback](#design-changes-from-feedback-2026-11-21), so [The window](#the-window) is the specification. |
+| Mock-ups | **Not in the repository, by the user's decision; do not commit mock-ups or screenshots.** Seven boards (stopped, running and settings in light and dark, and the macOS menu bar) are in the git-ignored `ignore/mockups/` on the user's machine, with their sources in `src/` (`node expand.js <in> <out.html> [light|dark]` makes plain HTML) and the annotated feedback screenshot; ask the user if the folder is absent. They predate the feedback in [Design changes from feedback](#design-changes-from-feedback-2026-11-21), so [The window](#the-window) is the specification. |
 | Unrelated finding | `kona-tile-handoff-race.md`: a real hang in the KONA tile scheduler, test ignored, not fixed. Not part of this work. |
 
 When #797 merges, rebase `iris-newgui` onto `main`. Do not put GUI commits on
