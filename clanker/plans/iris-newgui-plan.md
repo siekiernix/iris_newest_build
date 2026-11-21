@@ -53,7 +53,7 @@ When #797 merges, rebase `iris-newgui` onto `main`. Do not put GUI commits on
 | D5 | Keep every current indicator and add per-device activity lights ([Status bar](#status-bar)). |
 | D6 | Shells are Rust over the platform bindings (`objc2` / `objc2-app-kit`). No Swift, no C ABI. |
 | D7 | Every shell has every feature, laid out in native widgets. macOS gets a complete menu bar ([Menu bar](#menu-bar-macos)). |
-| D8 | Adding an SGI machine (Octane, O2, Onyx...) must not need shell code: settings are built from the core hardware tables plus one per-profile traits table in the shared crate. |
+| D8 | Adding an SGI machine (Octane, O2, Onyx...) must not need shell code: settings are built from the core hardware tables plus one per-profile traits table in `iris-gui-core`. |
 | D9 | The first macOS release is a full implementation (parity with egui). The App Store build waits until more platforms are ready. |
 | D10 | All new code lives under `iris-gui/`. |
 | D11 | Controls are icons with tooltips, not words. The controller gives each action an icon *meaning* (an enum) and its tooltip; the shell picks the glyph. macOS uses SF Symbols (`NSImage(systemSymbolName:)`, macOS 11+). SF Symbols may not ship on other platforms, so GTK4, Win32 and egui use one set of our own SVGs in `iris-gui/assets/icons/`, also the macOS fallback below 11. The accessibility label is the tooltip. |
@@ -74,27 +74,29 @@ When #797 merges, rebase `iris-newgui` onto `main`. Do not put GUI commits on
 ```
 iris-gui/
   Cargo.toml, src/            the egui shell (as today), becoming a view
-  shared/                     crate iris-gui-shared: no toolkit dependencies
+  core/                       crate iris-gui-core: no toolkit dependencies
     src/model/                worker handle, machine store, settings, summary, netplan, i18n
     src/controller/           one controller per task; Action / Effect; keys, ids, labels, icons
   frontends/
     appkit/                   crate iris-gui-appkit (objc2), macOS
     gtk4/, win32/             later
   locales/, assets/           shared by every shell (assets/icons/ is the SVG set)
-  scripts/check-boundaries.sh shells may import only iris_gui_shared::controller
+  scripts/check-boundaries.sh shells may import only iris_gui_core::controller
 ```
 
-`shared/` is a path dependency of `iris-gui`, so Cargo makes it a workspace
-member with no root edit.
+`core/` is a path dependency of `iris-gui`, so Cargo makes it a workspace
+member with no root edit. It is not called `shared/`: the root `.gitignore`
+ignores any folder of that name. In this plan "the core" still means the
+emulator crate `iris`; the GUI's crate is always written `iris-gui-core`.
 
 ## Layers
 
-- **Model** (`shared/src/model/`): today's toolkit-free modules, moved:
+- **Model** (`core/src/model/`): today's toolkit-free modules, moved:
   `handle.rs` (`Cmd`/`Evt`/`Status`, the 64 MB worker), `machines.rs`,
   `summary.rs`, `settings.rs`, `netplan.rs`, `netfix.rs`, `safe_stop.rs`,
   `ram.rs`, `single_instance.rs`, `i18n.rs`, `macos_sandbox.rs`,
   `capture_access.rs`, and the frame-sink half of `framebuffer.rs`.
-- **Controller** (`shared/src/controller/`): rusty-backup's contract.
+- **Controller** (`core/src/controller/`): rusty-backup's contract.
   `apply(Action) -> Vec<Effect>`, `tick() -> Vec<Effect>`, plain read
   accessors. `Action` and `Effect` are exhaustive enums matched with no `_`
   arm, so a new feature fails to compile in a shell that has not handled it.
@@ -140,8 +142,8 @@ pub struct Field { pub id: FieldId, pub label: String, pub help: Option<String>,
 
 Options come from the core tables (`MachineProfile::ALL`, `cpus()`,
 `memory_banks()`, `bank_sizes()`, `GraphicsBoard::ALL`), never from a shell.
-What the core does not say goes in **one** `ProfileTraits` table in the shared
-crate (NVRAM kind and whether reset/seed applies, EEPROM MAC, console port,
+What the core does not say goes in **one** `ProfileTraits` table in
+`iris-gui-core` (NVRAM kind and whether reset/seed applies, EEPROM MAC, console port,
 storage bus, fixed graphics, which sections apply, the library icon), replacing
 the `match profile` arms scattered through `config_ui.rs` and `extra_ui.rs`
 (`clanker/gui/profile-menus-must-use-core-hardware-tables.md`). Adding a
@@ -263,13 +265,13 @@ proposals and live in the controller key map.
 Small commits per slice. egui builds and `cargo test -p iris-gui` passes after
 each one.
 
-0. **Scaffold.** Create `iris-gui/shared` (`iris-gui-shared`, depends on
+0. **Scaffold.** Create `iris-gui/core` (`iris-gui-core`, depends on
    `iris`, no toolkit crates) and make `iris-gui` depend on it. Add
    `controller/mod.rs` with the `Controller` trait, `Effect`, `Notify`,
    `ids`, `keys`, `labels`, `icons`; add `scripts/check-boundaries.sh`. No
    behaviour change.
 1. **Move the model down.** Move the toolkit-free modules to
-   `shared/src/model`; egui imports them from there. Check each for egui
+   `core/src/model`; egui imports them from there. Check each for egui
    types first (`framebuffer.rs` splits; `i18n.rs` and the `t!` macro must
    work from both crates).
 2. **Controllers, egui rewired per slice**, in this order: App (library) ->
