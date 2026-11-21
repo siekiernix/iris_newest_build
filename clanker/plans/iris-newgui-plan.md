@@ -303,28 +303,25 @@ BSD-3-Clause, so the main crate must never be a dependency.
 - `src/fs/mod.rs` `open_editable_filesystem_with`: picks the filesystem for a
   partition.
 
-The right fix is in rusty-backup, by its author: move the SGI disk builder
-(and add an XFS variant) and the directory import into MIT crates, then
-depend on those. Until then, the iris side opens a partition itself (read the
-volume header with `part-tables`, then `EfsFilesystem::open` or
-`XfsFilesystem::open` by partition type) and must not copy AGPL source text.
-Do not start the copy-in or provisioning slices by re-implementing those
-files without the user's say.
+Decided 2026-11-21: rusty-backup goes first. Its author is moving the SGI
+disk builder (with an XFS variant) and the directory import into MIT crates
+and publishing them. The iris disk-tools slices wait for that release and
+then depend on the published crates. Do not re-implement those files in
+iris, and never copy AGPL source text. Before starting the slices, read the
+released crates' READMEs for the final names and signatures.
 
 ### Rules for using them
 
-- **Dependencies.** Not path dependencies (`../rusty-backup` is not there for
-  CI or other developers). Use a git dependency on the rusty-backup
-  repository pinned to a `rev`, or crates.io versions if they are published
-  (not checked). iris ignores `Cargo.lock`, so the pin must be in `Cargo.toml`.
-  Declare them in `iris-gui/core/Cargo.toml` with `default-features = false`
-  and only the features above.
-- **XFS is optional.** `fs-xfs` is GPL-2.0-only: a binary that links it is
-  distributed under GPL terms, and that does not fit the Mac App Store. Put
-  it behind an `xfs` Cargo feature of `iris-gui-core`, off for `appstore`;
-  whether release builds turn it on is the user's call ([Open](#open)). The
-  controller reports XFS as unavailable, with the reason, when it is not
-  built in.
+- **Dependencies.** The crates are published on crates.io (the user's
+  statement, 2026-11-21): depend on released versions in
+  `iris-gui/core/Cargo.toml`, with `default-features = false` and only the
+  features above. No path dependencies on `../rusty-backup` and no git
+  dependencies.
+- **XFS is built in everywhere**, the App Store build included. `fs-xfs` is
+  GPL-2.0-only; the user has checked that this is acceptable for the App
+  Store and that what is required is to credit it and point to its source.
+  So: list it, with its licence and source link, in iris's third-party
+  notices and in the app's About / acknowledgements. No `xfs` Cargo feature.
 - **Go through iris's block layer.** Open the image with
   `iris::block_node::open_image` and wrap the `BlockNode` (`read`/`write` at
   a byte offset, `flush`) as `Read + Write + Seek + Send`. The tools then see
@@ -410,16 +407,13 @@ For the user:
 - Does the box round "This build" mean "move it out of the summary"? The
   user asked for build features to be visible, so do not bury them on a guess.
 
-- Disk tools: will the SGI disk builder and the directory import move into
-  MIT crates in rusty-backup, or should iris write its own against the crate
-  traits?
-- Disk tools: is XFS (GPL-2.0-only) on in the release builds, or opt-in?
 - Disk tools: what should "SGI label only" lay out: a root and swap ready for
   an IRIX install, or a single data partition?
 
 For the implementer:
 
-- Whether the rusty-backup crates are on crates.io, and at which versions.
+- Which crate versions carry the SGI disk builder and the directory import
+  once rusty-backup releases them.
 - Not verified here: none of the crates has been run from iris against an
   IRIX-made image, and XFS write support has not been tried on an IRIX disk.
   Test on a copy before trusting copy-in.
