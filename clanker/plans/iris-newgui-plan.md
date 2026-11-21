@@ -1,95 +1,133 @@
 # New iris-gui framework: shared MVC core plus native shells
 
-Status: **draft, no code yet** (2026-11-20, branch `iris-newgui`). Mock-ups under
-review; decisions D1-D10 are the user's answers of 2026-11-20. Open points are
-listed at the end.
+Status: **planned, no GUI code written** (2026-11-21). This is the working
+brief for whoever implements it. Decisions are the user's unless marked
+*proposed*. Start at [Where things stand](#where-things-stand), then
+[Phases](#phases).
 
-Reference: `../rusty-backup` (CONTRIBUTING.md "Architecture policy (MVC)",
-`docs/native_frontends_plan.md`, `docs/appkit_shell_plan.md`, `frontends/appkit`,
-`frontends/mac-screens`). Same layering, adapted for an emulator with a live
-display.
+Reference implementation of the pattern: `../rusty-backup` (CONTRIBUTING.md
+"Architecture policy (MVC)", `docs/native_frontends_plan.md`,
+`docs/appkit_shell_plan.md`, `frontends/appkit`, `frontends/mac-screens`).
+Same layering, adapted for an emulator with a live display. Read its
+CONTRIBUTING section before writing a controller.
+
+## Where things stand
+
+| Thing | State |
+|---|---|
+| Branch `core-activity-counters` | On `main` (9d6c5d9e). Two commits: the disk/audio counters and the ignored KONA test. Pushed; PR techomancer/iris#797 open, CI green on the first commit. |
+| Branch `iris-newgui` | Rebased onto `core-activity-counters` (2026-11-21), so the counters are available here. Local only, never pushed. Holds this plan. |
+| GUI code | None. `iris-gui/` is the egui app unchanged. |
+| Mock-ups | **Not in the repository, by the user's decision; do not commit mock-ups or screenshots.** The user holds seven boards (stopped, running and settings in light and dark, and the macOS menu bar); ask for them if needed. They predate the feedback in [Design changes from feedback](#design-changes-from-feedback-2026-11-21), so [The window](#the-window) is the specification. |
+| Unrelated finding | `kona-tile-handoff-race.md`: a real hang in the KONA tile scheduler, test ignored, not fixed. Not part of this work. |
+
+When #797 merges, rebase `iris-newgui` onto `main`. Do not put GUI commits on
+`core-activity-counters`, and do not put this plan there.
+
+## Rules for this work
+
+- All new code lives under `iris-gui/`. The approved exceptions are in
+  [Outside iris-gui](#outside-iris-gui); anything else needs the user's OK.
+- Read first: `clanker/CLANKER.md`, `HACKING.md`, `iris-gui-README.md`,
+  `clanker/gui/01-overview.md`, and every note in `clanker/gui/` and
+  `clanker/macos/` (keyboard capture, physical keys, winit/main-thread rules,
+  GL teardown, the frame sink's damaged band, profile menus from core tables,
+  `machines::visit_paths`, sandbox grants). They are the gotchas the new
+  shells must not rediscover.
+- Never kill iris while IRIX runs on a real disk image; stop the guest or use
+  an overlay.
+- Tests: `cargo test -p iris-gui`, `cargo test --lib <filter>` for the core.
+  A full `cargo test --workspace` in a debug build takes very long here, and
+  `cargo nextest` (what CI runs) is not installed locally. CI is the full
+  check: it runs on pull requests into `main`.
+- Commit when asked; never push or open a PR unasked.
 
 ## Decisions
 
 | # | Decision |
 |---|---|
-| D1 | egui stays and ships. It is rewired onto the new controllers slice by slice, so every controller is validated by a working app before AppKit uses it. |
-| D2 | One machine runs at a time. The library lists all of them; the worker (`handle.rs`) and the cwd-per-machine rule are unchanged. Nothing in the controller API may assume a single session forever: session state hangs off a `SessionController`, not the app. |
+| D1 | egui stays and ships. It is rewired onto the new controllers slice by slice, so every controller is proven by a working app before AppKit uses it. |
+| D2 | One machine runs at a time. The library lists all of them; the worker (`handle.rs`) and the cwd-per-machine rule stay. Session state hangs off a `SessionController`, not the app, so several sessions remain possible later. |
 | D3 | Layout follows VMware Workstation: library on the left, the selected machine on the right (summary when stopped, guest display when running). The display can be detached into its own window. |
-| D4 | macOS presenter: a `CAMetalLayer` view fed by the existing `FrameSink` damaged bands (`replaceRegion` per band). Gives vsync, integer/linear scaling and a later path to a shared-device wgpu presenter. |
-| D5 | Keep every current indicator; add per-disk activity lights and the others in "Status bar" below. |
-| D6 | Shells are Rust over the platform bindings (`objc2` / `objc2-app-kit`), no Swift, no C ABI. |
-| D7 | Every shell has every feature. Each lays it out in native widgets; macOS gets a complete menu bar (see "Menu bar"). |
-| D8 | Adding an SGI machine (Octane, O2, Onyx...) must not need shell code: the settings screens are built from the core hardware tables plus one per-profile traits table in the shared crate. |
-| D9 | The first macOS release is a full implementation (parity with egui). The App Store build waits for more platforms. |
-| D10 | All new code lives under `iris-gui/`. Exceptions need the user's OK (see "Outside iris-gui"). |
-| D11 | Controls are icons with tooltips, not words (2026-11-20). The controller gives each action an icon *meaning* (an enum) and its tooltip text; the shell picks the glyph. macOS uses SF Symbols (`NSImage(systemSymbolName:)`, macOS 11+). SF Symbols may not ship on other platforms, so GTK4/Win32/egui use one set of our own SVGs under `iris-gui/assets/icons/`, which is also the macOS fallback below 11. The accessibility label is the tooltip. |
-| D12 | Light and dark appearance, following the system. Shells use the toolkit's semantic colours (AppKit: `NSColor` system colours, no hard-coded hex); the guest display area stays dark in both. |
-| D13 | Build features are shown: a "This build" chip row on the summary page (present and absent, from `iris::build_features`), the executor chip in the status bar, and the full list in Help > Diagnostics. |
-| D14 | No pause/resume: the core has none, so it is not offered. |
-| D15 | Saved states: the core already takes a name (`Cmd::SaveState(String)` / `RestoreState`), so each machine gets a list of its named states (summary page chips, toolbar "Saved states", Machine menu). No snapshot tree. |
-| D16 | The egui shell keeps its current look. It is rewired onto the controllers (D1) but does not take the Workstation layout; phase 3 below is dropped. |
-| D17 | macOS floor: 10.13, the same as today's egui bundle (`scripts/dist/macos-bundle.sh`) and what `objc2-app-kit` and Metal allow without workarounds. Features newer than that are runtime-checked (SF Symbols on 11+). Revisit only if a build problem forces it. |
-| D18 | Core activity counters (per-SCSI-id read/write, audio active, serial activity) are allowed, on **their own branch off `main`** with their own PR, not on `iris-newgui`. The status bar degrades to "no light" for a counter the core does not report. |
+| D4 | macOS presenter: a `CAMetalLayer` view fed by the existing `FrameSink` damaged bands (`replaceRegion` per band). Vsync, integer or linear scaling, and a later path to a shared-device wgpu presenter. |
+| D5 | Keep every current indicator and add per-device activity lights ([Status bar](#status-bar)). |
+| D6 | Shells are Rust over the platform bindings (`objc2` / `objc2-app-kit`). No Swift, no C ABI. |
+| D7 | Every shell has every feature, laid out in native widgets. macOS gets a complete menu bar ([Menu bar](#menu-bar-macos)). |
+| D8 | Adding an SGI machine (Octane, O2, Onyx...) must not need shell code: settings are built from the core hardware tables plus one per-profile traits table in the shared crate. |
+| D9 | The first macOS release is a full implementation (parity with egui). The App Store build waits until more platforms are ready. |
+| D10 | All new code lives under `iris-gui/`. |
+| D11 | Controls are icons with tooltips, not words. The controller gives each action an icon *meaning* (an enum) and its tooltip; the shell picks the glyph. macOS uses SF Symbols (`NSImage(systemSymbolName:)`, macOS 11+). SF Symbols may not ship on other platforms, so GTK4, Win32 and egui use one set of our own SVGs in `iris-gui/assets/icons/`, also the macOS fallback below 11. The accessibility label is the tooltip. |
+| D12 | Light and dark appearance, following the system. Shells use the toolkit's semantic colours (AppKit: `NSColor` system colours, no hard-coded hex). The guest display area stays dark in both. |
+| D13 | Build features are shown to the user (from `iris::build_features`). Placement is under review, see [Open](#open). |
+| D14 | No pause/resume: the core has none. |
+| D15 | Saved states: the core already takes a name (`Cmd::SaveState(String)` / `RestoreState`), so each machine has a list of its named states. No snapshot tree. |
+| D16 | The egui shell keeps its current look. It is rewired onto the controllers but does not take the Workstation layout. |
+| D17 | macOS floor 10.13, the same as today's egui bundle (`scripts/dist/macos-bundle.sh`). Newer features are runtime-checked. Not verified that anything older builds. |
+| D18 | Core activity counters for disks and audio: done, on `core-activity-counters` ([Core counters](#core-counters)). No serial counter in the core. |
+| D19 | Each native shell crate is one line in the root `Cargo.toml` `members`, with its dependencies and code gated on its own `cfg(target_os)`, so `cargo build --workspace` elsewhere builds an empty binary. |
+| D20 | Opening the hung KONA test was out of scope; it is ignored and written up separately. |
+| D21 | No importing of CLI `.toml` files into the library (2026-11-21). Machines are created in the GUI; their files remain core-schema TOML. |
+| D22 | Display scale is one setting for the whole application, not per machine (2026-11-21). No core config key. |
 
 ## Layout on disk
 
 ```
 iris-gui/
-  Cargo.toml, src/            the egui shell (as today), now a view
+  Cargo.toml, src/            the egui shell (as today), becoming a view
   shared/                     crate iris-gui-shared: no toolkit dependencies
     src/model/                worker handle, machine store, settings, summary, netplan, i18n
-    src/controller/           one controller per task; Action / Effect; keys, ids, labels
+    src/controller/           one controller per task; Action / Effect; keys, ids, labels, icons
   frontends/
     appkit/                   crate iris-gui-appkit (objc2), macOS
     gtk4/, win32/             later
-  locales/, assets/           shared by every shell
+  locales/, assets/           shared by every shell (assets/icons/ is the SVG set)
   scripts/check-boundaries.sh shells may import only iris_gui_shared::controller
 ```
 
-`shared/` is a path dependency of `iris-gui`, so Cargo adds it to the workspace
-with no root `Cargo.toml` edit. Shell crates need one line each in the root
-`members` (or their own `[workspace]`, which rebuilds the core a second time).
+`shared/` is a path dependency of `iris-gui`, so Cargo makes it a workspace
+member with no root edit.
 
 ## Layers
 
-- **Model** (`shared/src/model/`): what exists today without egui in it:
+- **Model** (`shared/src/model/`): today's toolkit-free modules, moved:
   `handle.rs` (`Cmd`/`Evt`/`Status`, the 64 MB worker), `machines.rs`,
   `summary.rs`, `settings.rs`, `netplan.rs`, `netfix.rs`, `safe_stop.rs`,
   `ram.rs`, `single_instance.rs`, `i18n.rs`, `macos_sandbox.rs`,
-  `capture_access.rs`, and the frame sink half of `framebuffer.rs`.
+  `capture_access.rs`, and the frame-sink half of `framebuffer.rs`.
 - **Controller** (`shared/src/controller/`): rusty-backup's contract.
   `apply(Action) -> Vec<Effect>`, `tick() -> Vec<Effect>`, plain read
-  accessors, exhaustive enums matched with no `_` arm, stable widget ids used
-  as accessibility identifiers, key map as data (`Primary` = Cmd/Ctrl),
-  labels from the controller through Fluent. No toolkit, no raw threads.
-- **View**: egui (`iris-gui/src`), AppKit, later GTK4 and Win32. Renders,
-  maps input to actions, fulfils effects (file pickers, confirms, alerts,
+  accessors. `Action` and `Effect` are exhaustive enums matched with no `_`
+  arm, so a new feature fails to compile in a shell that has not handled it.
+  Stable widget ids double as accessibility identifiers. Key bindings are
+  one data table (`Primary` = Cmd on macOS, Ctrl elsewhere). Labels and
+  tooltips come from the controller through Fluent. No toolkit, no raw threads.
+- **View**: egui (`iris-gui/src`), AppKit, later GTK4 and Win32. Renders, maps
+  input to actions, fulfils effects (file pickers, confirmations, alerts,
   clipboard, open URL, elevation prompt).
 
 `Notify::wake` replaces polling: egui `request_repaint`, AppKit
-`dispatch_async` to the main queue (always queued, never inline). The frame
-path keeps its own wake (`FrameSink`), separate from controller wakes.
+`dispatch_async` to the main queue (always queued, never run inline). The
+frame path keeps its own wake (`FrameSink`), separate from controller wakes.
 
 ### Controllers
 
 | Controller | Owns | Comes from |
 |---|---|---|
-| `AppController` | library (discover, select, new, rename, delete, duplicate), active machine, dirty/autosave, toasts, quit and close interception (CHD sync), prefs, language | `main.rs`, `machines.rs` |
-| `SessionController` | start, stop, halt IRIX, save/restore state, screenshot, run state, every status-bar indicator, CD load/eject/remount, COW commit/reset, safe-stop rules | `main.rs`, `handle.rs`, `scsi_menu.rs`, `safe_stop.rs` |
-| `DisplayController` | capture/release rules and chords, fullscreen, detach, scaling mode, the "powered off" overlay state | `input.rs`, `framebuffer.rs`, `main.rs` |
+| `AppController` | library (discover, select, new, rename, delete, duplicate, folders), active machine, dirty/autosave, toasts, quit and close interception (CHD sync), prefs, language | `main.rs`, `machines.rs` |
+| `SessionController` | start, stop, halt IRIX, saved states, screenshot, run state, every status-bar light, CD load/eject/remount, COW commit/reset, safe-stop rules | `main.rs`, `handle.rs`, `scsi_menu.rs`, `safe_stop.rs` |
+| `DisplayController` | capture/release rules and chords, fullscreen, detach, scaling mode, the "powered off" overlay | `input.rs`, `framebuffer.rs`, `main.rs` |
 | `SettingsController` | the machine config as a form schema (below), validation, refit on profile change, missing-disk preflight | `config_ui.rs`, `extra_ui.rs`, `summary.rs` |
-| `NetworkController` | NAT/PCAP mode, subnet presets and overlap warnings, port forwards (live), "check networking" diagnosis, PCAP elevation | `netplan.rs`, `netfix.rs`, `capture_access.rs` |
-| `SerialConsoleController` | console port routing, scrollback, input | `serial_console.rs` |
+| `NetworkController` | NAT/PCAP mode, subnet presets and overlap warnings, live port forwards, "check networking", PCAP elevation | `netplan.rs`, `netfix.rs`, `capture_access.rs` |
+| `SerialConsoleController` | console port routing, scrollback, input, the serial light | `serial_console.rs` |
 | `BenchController` | benchmark run, progress, results | `bench_ui.rs` |
-| `DebugController` | monitor port, perfetto start/stop, diagnostics text | `config_ui.rs` Debug tab |
+| `DebugController` | monitor port, perfetto start/stop, diagnostics text, build features | `config_ui.rs` Debug tab |
 | `CameraTestController` | VINO/IndyCam source test | `camera_test.rs` |
-| dialogs | new-machine wizard, rename, about, diagnostics | `dialogs/` |
+| dialogs | new-machine wizard, rename, about | `dialogs/` |
 
 ### Settings as data (D8)
 
 `SettingsController` hands every shell a list of sections, each a list of
-fields; shells implement the field kinds once.
+fields; a shell implements each field kind once.
 
 ```rust
 pub struct Section { pub id: SectionId, pub title: String, pub fields: Vec<Field> }
@@ -104,103 +142,182 @@ Options come from the core tables (`MachineProfile::ALL`, `cpus()`,
 `memory_banks()`, `bank_sizes()`, `GraphicsBoard::ALL`), never from a shell.
 What the core does not say goes in **one** `ProfileTraits` table in the shared
 crate (NVRAM kind and whether reset/seed applies, EEPROM MAC, console port,
-storage bus, fixed graphics, which sections apply), replacing the
-`match profile` arms scattered through `config_ui.rs` / `extra_ui.rs`
+storage bus, fixed graphics, which sections apply, the library icon), replacing
+the `match profile` arms scattered through `config_ui.rs` and `extra_ui.rs`
 (`clanker/gui/profile-menus-must-use-core-hardware-tables.md`). Adding a
-machine is then: core profile, one traits row, one sidebar icon.
+machine is then: the core profile, one traits row, one icon.
 
-## The window (D3)
+### Configuration files
 
-- **Toolbar**: power on / shut down guest (halt) / power off, pause-less
-  restart, snapshot (save/restore state), screenshot, CD, fullscreen, detach
-  display, settings.
-- **Library** (left, collapsible): machines grouped by family, each with an
-  icon, name, profile and a run-state dot; context menu (start, settings,
-  rename, duplicate, delete, show in Finder); "+" for New Machine.
-- **Content** (right): stopped: summary page (preview thumbnail of the last
-  screenshot, Power On, hardware list with one row per device that opens its
-  settings section, missing-disk warnings). Running: the guest display.
+- A machine is its core-schema TOML at `machines/<name>/<name>.toml`, the
+  same file the `iris` CLI reads. That stays the single source of truth; the
+  GUI never keeps machine settings anywhere else.
+- `gui.json` holds only app preferences: UI scale, display scale, language,
+  the selected machine, sandbox grants, and (new) library folders.
+- No import of a CLI `.toml` into the library (D21). **File > Open Config
+  File** opens the selected machine's TOML in the user's editor, and the CLI
+  can run a GUI machine's TOML directly.
+- Display scale is an application preference in `gui.json` (D22); it does not
+  travel with a machine.
+
+## The window
+
+- **Toolbar** (icons, D11): show/hide library; power on, shut down guest
+  (halt IRIX), power off, restart; save state, saved states, screenshot,
+  insert disc; then on the right detach display, full screen, serial console,
+  machine settings.
+- **Library** (left, collapsible from the toolbar and View menu).
+- **Content** (right): the summary when stopped, the guest display when
+  running.
 - **Status bar** under the content.
-- Settings open as a sheet over the window (Workstation's hardware list on
-  the left, the section's form on the right); live-editable fields stay
-  enabled while running, the rest say "takes effect at next power on".
+- **Settings** open as a sheet: device list on the left with a one-line
+  summary each, the section's form on the right. Fields that can change live
+  stay enabled while running; the rest say "takes effect at next power on".
 
-### Status bar (D5)
+### Design changes from feedback (2026-11-21)
+
+Community review of the stopped-view mock-up (an annotated screenshot, not
+kept in the repository) and chat comments.
+The first three were stated in words; the rest are *proposed* readings of
+circles and underlines and need the user's confirmation.
+
+| Feedback | Change |
+|---|---|
+| "Add folders" | The library has user folders. Default view groups by machine family; the user can create folders and drag machines into them. Stored in `gui.json`. |
+| "Think of a better way" (saved states) | Replace the row of chips with a list: name, date, size, with Restore, Rename and Delete per row, in its own section of the summary and in a popover from the toolbar button. |
+| "stopped" crossed out in a row | Drop the run-state word from library rows. Show a status dot on the icon only for a machine that is running or has a problem. |
+| Hide or fold the sidebar | Already designed: toolbar toggle and View > Show Library. |
+| Fullscreen | Already exists in egui (F11; Ctrl+Alt+F11 sends F11 to the guest) and is kept: toolbar button and View > Enter Full Screen. |
+| TOML as the one config | Already true for machine settings; importing a CLI file was considered and dropped (D21). See [Configuration files](#configuration-files). |
+| Circles on the IP24/IP22/IP28 tiles *(proposed reading)* | Replace board-number badges with a small picture of each machine; the IP number moves to the subtitle. |
+| Underlines on the spec line, "missing", "copy-on-write", PROM *(proposed reading: said twice)* | Shorten the spec line under the name to machine and IRIX version; drop the "missing" tag where the warning banner already says it. |
+| Box round "This build" and the `jitv2` chip *(proposed reading: shown twice)* | Keep the executor chip in the status bar; move the full feature list to About and Help > Diagnostics, with at most one summary line on the page. |
+| Box round the empty status-bar hint | Show the device lights greyed out when stopped, so the bar is the same in both states and each still opens its settings. |
+
+### Status bar
 
 Left: run state (Stopped / PROM / Booting / Running / Halted / Powered off),
-machine, profile, CPU (plus "CPU change pending"), executor badge
-(interpreter / jitv2 / lightning), unsaved mark, toast.
+executor chip (interpreter / jitv2 / lightning), "CPU change at next power on"
+when pending, unsaved mark, toast.
 
-Right, one clickable item each: per-disk lights (read/write; COW dirty-sector
-badge; CHD sync pending), CD-ROM (disc loaded, activity; click to load/eject),
+Right, one clickable icon each with a state dot and a tooltip that says what
+it is doing: every disk (read / write; copy-on-write dirty-sector count; CHD
+sync pending), every CD-ROM (disc loaded, activity; click to insert or eject),
 network (NAT or PCAP, activity, guest IP, fault badge that opens the
-diagnosis), serial console (activity; click opens it), audio (active/muted),
-camera (in use), input capture (captured + release chord), display mode and
-scale, MIPS, kernel Hz.
+diagnosis), serial console, audio, camera, input capture (with the release
+chord), display scale, MIPS, kernel Hz. Greyed out when the machine is
+stopped.
 
-Per-disk lights, audio and serial activity need counters the worker `Status`
-does not have today (see "Outside iris-gui").
+Sources: MIPS, Hz, network, PCAP, CHD sync and `dirty_cow` are already in
+`handle.rs` `Status`. Disks and audio come from the new core counters. The
+serial light comes from the GUI's own console connection (lit only while the
+console window is connected), because the core has no serial counter. Camera
+"in use" has no source yet: find one in the VINO/camera code or drop the light.
 
-### Menu bar (macOS, D7)
+### Core counters
 
-Every item runs a controller action and greys out with it; shortcuts live in
-the controller key map.
+On `core-activity-counters` (and so on `iris-newgui`):
+
+```rust
+// Workstation (src/workstation.rs), both lock-free and monotonic
+fn disk_activity(&self) -> Vec<Vec<iris::scsi::DiskCounts>>; // per disk bus, then per SCSI id
+fn audio_frames(&self) -> Option<u64>;                       // None with no sound card
+pub struct DiskCounts { reads, read_bytes, writes, write_bytes } // all u64
+```
+
+- Bus order is the machine's SCSI controller order, then NVMe and Fibre
+  Channel where it has them. Match a light to a config entry with
+  `config::scsi_slot(controller, id)`.
+- They only go up. The worker's 500 ms status tick should sample both, keep
+  the previous sample, and put "read since last tick / wrote since last tick /
+  audio moving" into `Status`. 500 ms is slow for a disk light: *proposed* a
+  faster tick (about 100 ms) for these fields only, since reading them costs a
+  few atomic loads.
+- An id with nothing on it stays at zero; show lights only for configured
+  devices.
+
+### Menu bar (macOS)
+
+Every item runs a controller action and greys out with it. Shortcuts are
+proposals and live in the controller key map.
 
 - **IRIS**: About, Check for Updates, Settings (app prefs, language), Quit.
-- **File**: New Machine, Open Machine Folder, Import Config, Duplicate,
-  Rename, Delete, Show in Finder, Close.
-- **Edit**: standard items; Copy Screenshot; Paste Text to Guest.
-- **View**: Show/Hide Library, Show/Hide Status Bar, Enter Full Screen, Detach
-  Display, Scale (Fit, 1x, 2x, Integer), Filter (Nearest, Linear), Serial
+- **File**: New Machine, New Folder, Duplicate, Rename, Delete, Show in
+  Finder, Open Config File, Close.
+- **Edit**: standard items; Copy Screen; Paste Text to Guest.
+- **View**: Show Library, Show Status Bar, Enter Full Screen, Detach Display,
+  Scale (Fit, 1x, 2x, Integer Only), Filter (Nearest, Linear), Serial
   Console, Log.
-- **Machine**: Power On, Shut Down Guest (halt), Power Off, Restart, Save
-  State, Restore State, Take Screenshot, Capture Input, Send Key (F11,
-  Ctrl+Alt+Del...), Settings.
-- **Devices**: one submenu per CD-ROM (Insert Disc, Eject, Remount in IRIX),
-  per disk (Apply Changes, Roll Back, Synchronize), Network (mode, Check
-  Networking, Port Forwards), Camera, Audio.
-- **Tools**: Benchmark, Camera Test, Debug (monitor, perfetto), Diagnostics.
-- **Window**, **Help** (guide, debug.md, report an issue).
+- **Machine**: Power On, Shut Down Guest, Power Off, Restart, Save State,
+  Saved States, Take Screenshot, Capture Input, Send Key (F11, Ctrl+Alt+Del,
+  Esc), Machine Settings.
+- **Devices**: per CD-ROM (Insert Disc, Eject, Remount in IRIX), per disk
+  (Apply Changes, Roll Back), Synchronize Disks, Network (NAT, Bridged, Check
+  Networking, Port Forwards), Camera Source, Mute Audio.
+- **Tools**: Benchmark, Camera Test, Monitor Console, Perfetto trace,
+  Automation, Diagnostics, Reset NVRAM, Set MAC Address.
+- **Window**, **Help** (guide, report an issue).
 
 ## Phases
 
-Small commits per slice; egui builds and its tests pass after each.
+Small commits per slice. egui builds and `cargo test -p iris-gui` passes after
+each one.
 
-0. **Scaffold**: `shared/` crate, `Controller` trait, `Effect`, `Notify`,
-   `ids`, `keys`, `labels`, boundary script. No behaviour change.
-1. **Move the model down**: the toolkit-free modules move to
-   `shared/src/model`; egui imports them from there.
-2. **Controllers, egui rewired per slice**: App (library) -> Session ->
-   Display -> Settings (schema + `ProfileTraits`) -> Network -> Serial ->
-   Bench/Debug/Camera -> dialogs. Exit: `iris-gui/src` holds no domain logic
-   and the boundary script reports 0.
-3. ~~egui takes the Workstation layout~~ dropped (D16); egui keeps its look.
-4. **AppKit shell**: 0 app, window, menu, wake, library; 1 summary; 2 Metal
-   presenter, physical-key input, capture, fullscreen, detach; 3 status bar;
-   4 settings sheet (field kinds); 5 disks, CD, COW, sync-on-quit; 6 network;
-   7 serial console; 8 benchmark, debug, camera; 9 bundle, signing,
-   notarized DMG, own bundle id beside the egui app.
-5. **Parity check and release** as a preview beside egui; then GTK4 and
-   Win32 over the same controllers.
+0. **Scaffold.** Create `iris-gui/shared` (`iris-gui-shared`, depends on
+   `iris`, no toolkit crates) and make `iris-gui` depend on it. Add
+   `controller/mod.rs` with the `Controller` trait, `Effect`, `Notify`,
+   `ids`, `keys`, `labels`, `icons`; add `scripts/check-boundaries.sh`. No
+   behaviour change.
+1. **Move the model down.** Move the toolkit-free modules to
+   `shared/src/model`; egui imports them from there. Check each for egui
+   types first (`framebuffer.rs` splits; `i18n.rs` and the `t!` macro must
+   work from both crates).
+2. **Controllers, egui rewired per slice**, in this order: App (library) ->
+   Session (including the counter sampling above) -> Display -> Settings
+   (schema and `ProfileTraits`) -> Network -> Serial -> Bench, Debug, Camera
+   -> dialogs. Exit: `iris-gui/src` holds no domain logic and the boundary
+   script reports 0.
+3. *(dropped, D16: egui keeps its look.)*
+4. **AppKit shell.** 0 app, window, menu bar, wake, library; 1 summary;
+   2 Metal presenter, physical-key input (macOS key codes to the
+   `winit::keyboard::KeyCode` the PS/2 layer takes), capture, fullscreen,
+   detach; 3 status bar; 4 settings sheet (the field kinds); 5 disks, CD,
+   COW, sync on quit; 6 network; 7 serial console; 8 benchmark, debug,
+   camera; 9 bundle, signing, notarized DMG, its own bundle id beside the
+   egui app.
+5. **Parity check and release** as a preview beside egui; then GTK4 and Win32
+   over the same controllers.
 
-Testing: controller unit tests (no window); the existing egui headless tests;
-later a flow driver over the accessibility ids, as rusty-backup's tier 8.
+Testing: controller unit tests with no window; the existing egui headless
+tests; later a flow driver over the accessibility ids, as rusty-backup's
+tier 8.
 
-## Outside iris-gui (needs the user's OK, D10)
+When behaviour a human guide describes changes, update it in the same change:
+`iris-gui-README.md`, `FEATURES.md`, `HELP.md`, and a `CHANGELOG.md` line.
 
-- Root `Cargo.toml`: one `members` line per shell crate (approved
-  2026-11-20). Each shell gates its dependencies and code on its own
-  `cfg(target_os = ...)`, so `cargo build --workspace` on another OS builds an
-  empty binary. `iris-gui/shared` needs no line: a path dependency inside the
-  workspace directory is a member automatically.
-- Core counters for the new lights: per-SCSI-id read/write activity, audio
-  active, serial activity. Approved (D18), on a separate branch off `main`.
-  Without them only COW write activity can be inferred (from `dirty_cow`
-  deltas).
-- Human docs when it ships: `iris-gui-README.md`, `FEATURES.md`,
-  `CHANGELOG.md`; the release workflow for the new bundle.
+## Outside iris-gui
+
+Approved:
+
+- Root `Cargo.toml`: one `members` line per shell crate (D19).
+- The disk and audio counters in the core (D18), done.
+- Human docs at the repository root, and the release workflow for the new
+  bundle, when it ships.
+
+Not approved, ask first: a serial counter in the core; anything else in
+`src/`.
 
 ## Open
 
-- Where the saved-state files of a machine are listed from (a directory scan
-  of the machine folder vs. an index the controller keeps).
+For the user:
+
+- Do the circles on the IP tiles mean "replace with machine pictures"?
+- Does the box round "This build" mean "move it out of the summary"? The
+  user asked for build features to be visible, so do not bury them on a guess.
+
+For the implementer:
+
+- Where a machine's saved states are listed from: a scan of the machine
+  folder, or an index the controller keeps.
+- A source for the camera "in use" light.
+- Whether the status tick is split into a slow and a fast part for the lights.
