@@ -282,7 +282,7 @@ All under `../rusty-backup/crates/`, Rust 1.73 floor, reviewed at `d2258bde`:
 | `disk-core` | MIT | The traits everything speaks: `filesystem::Filesystem` (root, `list_directory`, `read_file`, `write_file_to`, `fsck`, sizes) and `filesystem::EditableFilesystem` (`create_file`, `create_directory`, `delete_entry`, `delete_recursive`, `rename`, `set_permissions`, `set_owner`, `create_symlink`, `free_space`, `sync_metadata`); `entry::FileEntry`; `sgi::SgiLabelByteOrder`. |
 | `part-tables` (feature `sgi`) | MIT | `sgi::SgiVolumeHeader::{parse, to_bytes}`, `SgiPartitionEntry`, `SgiPartitionType`, `SgiDeviceParameters::for_geometry`, `SgiVolumeDirEntry`; `sgi_dklabel` for the older label. Enable only `sgi`, not the default feature set. |
 | `fs-unix` (feature `efs`) | MIT | `efs::EfsFilesystem::open(reader, partition_offset)`, which is both `Filesystem` and `EditableFilesystem`; `efs::write_blank_efs`; `efs_fsck`, `efs_resize`. Enable only `efs`. |
-| `fs-xfs` | **GPL-2.0-only** | `xfs::XfsFilesystem::open`, also editable (IRIX v4 dir1/dir2 through Linux v5); `xfs::format::write_blank_xfs`; fsck and repair. |
+| `fs-xfs` | GPL-2.0-only today, **MIT after rusty-backup's relicence** (below) | `xfs::XfsFilesystem::open`, also editable (IRIX v4 dir1/dir2 through Linux v5); `xfs::format::write_blank_xfs`; fsck and repair. |
 | `rb-fsexporter` | MIT | Copy out to the host: `count`, `extract`, `extract_contents`, with `Options` for symlinks, existing files and name collisions, and cancellation. Pulls in `fs-mac`. |
 | `fs-tar` | MIT | `import_sink`: the shared copy-in machinery, including the path-traversal checks. |
 
@@ -303,9 +303,9 @@ BSD-3-Clause, so the main crate must never be a dependency.
 - `src/fs/mod.rs` `open_editable_filesystem_with`: picks the filesystem for a
   partition.
 
-Decided 2026-11-21: rusty-backup goes first. Its author is moving the SGI
-disk builder (with an XFS variant) and the directory import into MIT crates
-and publishing them. The iris disk-tools slices wait for that release and
+Decided 2026-11-21: rusty-backup goes first. Its author is relicensing
+`fs-xfs` to MIT, moving the SGI disk builder (with an XFS variant) and the
+directory import into MIT crates, and publishing them. The iris disk-tools slices wait for that release and
 then depend on the published crates. Do not re-implement those files in
 iris, and never copy AGPL source text. Before starting the slices, read the
 released crates' READMEs for the final names and signatures.
@@ -317,11 +317,14 @@ released crates' READMEs for the final names and signatures.
   `iris-gui/core/Cargo.toml`, with `default-features = false` and only the
   features above. No path dependencies on `../rusty-backup` and no git
   dependencies.
-- **XFS is built in everywhere**, the App Store build included. `fs-xfs` is
-  GPL-2.0-only; the user has checked that this is acceptable for the App
-  Store and that what is required is to credit it and point to its source.
-  So: list it, with its licence and source link, in iris's third-party
-  notices and in the app's About / acknowledgements. No `xfs` Cargo feature.
+- **XFS is built in everywhere**, the App Store build included, and iris uses
+  `fs-xfs` only once it is MIT. Today the crate is GPL-2.0-only for one
+  reason: `dir_hashname` in `xfs/edit.rs` follows xfsprogs' `xfs_da_hashname`
+  line for line. The crate is otherwise solely its author's. rusty-backup is
+  re-deriving that function from SGI's "XFS Algorithms & Data Structures"
+  document and relicensing the crate to MIT (decided 2026-11-21). Depend on
+  the first MIT release or later, never on a GPL one, and check the
+  published crate's licence field before adding it. No `xfs` Cargo feature.
 - **Go through iris's block layer.** Open the image with
   `iris::block_node::open_image` and wrap the `BlockNode` (`read`/`write` at
   a byte offset, `flush`) as `Read + Write + Seek + Send`. The tools then see
