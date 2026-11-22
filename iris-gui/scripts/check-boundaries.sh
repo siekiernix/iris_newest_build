@@ -12,6 +12,9 @@
 #   - shells naming the emulator (`iris::`) or the model
 #     (`iris_gui_core::model`, `core::model`) directly, and raw thread spawns.
 #
+# The egui app (iris-gui/src) is on its way out and is not counted: it may
+# keep reaching past the controllers until it is removed. `-v` still lists it.
+#
 # Usage: iris-gui/scripts/check-boundaries.sh [-v]   (-v lists the files behind each count)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -19,8 +22,10 @@ cd "$(dirname "$0")/.."
 VERBOSE=0
 [ "${1:-}" = "-v" ] && VERBOSE=1
 
-SHELLS=(src)
+SHELLS=()
 for d in frontends/*/src; do [ -d "$d" ] && SHELLS+=("$d"); done
+# Not counted (see above).
+LEGACY=(src)
 # Shells that must already be clean.
 ENFORCED=()
 for d in frontends/*/src; do [ -d "$d" ] && ENFORCED+=("$d"); done
@@ -72,8 +77,12 @@ if [ "${#ENFORCED[@]}" -gt 0 ]; then
   fi
 fi
 
-refs=$(refs_in "${SHELLS[@]}")
-spawns=$(spawns_in "${SHELLS[@]}")
+refs=""
+spawns=""
+if [ "${#SHELLS[@]}" -gt 0 ]; then
+  refs=$(refs_in "${SHELLS[@]}")
+  spawns=$(spawns_in "${SHELLS[@]}")
+fi
 n_refs=$(printf '%s' "$refs" | grep -c . || true)
 n_spawn=$(printf '%s' "$spawns" | grep -c . || true)
 total=$((n_refs + n_spawn))
@@ -83,6 +92,11 @@ if [ "$VERBOSE" = 1 ]; then
   printf '%s\n' "$refs" | grep . | cut -d: -f1 | sort | uniq -c | sort -rn || true
   echo "--- raw thread spawns per file"
   printf '%s\n' "$spawns" | grep . | cut -d: -f1 | sort | uniq -c | sort -rn || true
+fi
+
+if [ "$VERBOSE" = 1 ]; then
+  legacy=$(refs_in "${LEGACY[@]}"; spawns_in "${LEGACY[@]}")
+  echo "--- not counted: the egui app (${LEGACY[*]}) reaches past the controllers $(printf '%s' "$legacy" | grep -c . || true) times"
 fi
 
 echo "boundaries: $total"
