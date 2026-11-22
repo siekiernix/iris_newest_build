@@ -17,7 +17,7 @@ CONTRIBUTING section before writing a controller.
 |---|---|
 | Branch `core-activity-counters` | Merged into `main` as PR techomancer/iris#797 (2026-11-22). |
 | Branch `iris-newgui` | Rebased onto `main` after #797 merged (2026-11-22). Local only, never pushed. Holds this plan and the GUI work. |
-| GUI code | Phase 2 under way: App and Session slices done (library, folders, duplicate, quit guard; power on/off with the preflights as controller questions, saved states, discs, copy-on-write, NVRAM reset, status-bar lights from the core counters; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
+| GUI code | Phase 2 under way: App, Session and Display slices done (library, folders, duplicate, quit guard; power on/off with the preflights as controller questions, saved states, discs, copy-on-write, NVRAM reset, status-bar lights from the core counters; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
 | Mock-ups | **Not in the repository, by the user's decision; do not commit mock-ups or screenshots.** Seven boards (stopped, running and settings in light and dark, and the macOS menu bar) are in the git-ignored `ignore/mockups/` on the user's machine, with their sources in `src/` (`node expand.js <in> <out.html> [light|dark]` makes plain HTML) and the annotated feedback screenshot; ask the user if the folder is absent. They predate the feedback in [Design changes from feedback](#design-changes-from-feedback-2026-11-21), so [The window](#the-window) is the specification. |
 | Unrelated finding | `kona-tile-handoff-race.md`: a real hang in the KONA tile scheduler, test ignored, not fixed. Not part of this work. |
 
@@ -499,6 +499,14 @@ Not approved, ask first: a serial counter in the core; anything else in
   then id), network, audio. NVMe and Fibre Channel disks have no light yet.
   The camera light is dropped: nothing in the core says the camera is in use.
   The serial light comes with the serial console controller.
+- **Display**: the shell sends physical keys and pointer deltas only while
+  captured; the release chord, Ctrl+Alt+Esc, F11 / Ctrl+Alt+F11 and the
+  focus-loss grace are `DisplayController` rules. Capture, full screen and
+  detach are controller state the shell mirrors (it grabs the cursor or
+  resizes the window when the state changes). Scaling is app-wide
+  (`display_mode` Fit or Scale with `vm_scale`, `integer_only`,
+  `display_filter` in `gui.json`); `display::draw_size` is the one sizing
+  rule. egui has no detached window (it keeps its look, D16).
 - **Reset NVRAM** now asks first; it loses PROM `setenv` settings.
 - **Interim accessors.** `AppController::config_mut`, `prefs_mut` and
   `SessionController::handle{,_mut}` are `#[doc(hidden)]` bridges for egui

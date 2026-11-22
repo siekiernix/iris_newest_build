@@ -31,6 +31,7 @@ use eframe::egui;
 use egui::{Color32, RichText, ViewportCommand};
 use handle::{Cmd, NetState};
 use iris_gui_core::controller::app::{AppAction, AppController};
+use iris_gui_core::controller::display::DisplayAction;
 use iris_gui_core::controller::session::{SessionAction, SessionEvent};
 use iris_gui_core::controller::{Controller, Enabled};
 use settings::{GuiSettings, UI_SCALE_MAX, UI_SCALE_MIN, WINDOW_DEFAULT_SIZE};
@@ -67,16 +68,6 @@ fn developer_binary(name: &str) -> PathBuf {
     launch_dir().join(format!("target/release/{name}{suffix}"))
 }
 
-/// Largest aspect-preserving size (egui points) that fits `avail` for a
-/// framebuffer whose native pixel dimensions are `px`.
-fn fb_fit_size(avail: egui::Vec2, px: egui::Vec2) -> egui::Vec2 {
-    let fb_aspect = px.x / px.y;
-    if avail.x / avail.y > fb_aspect {
-        egui::vec2(avail.y * fb_aspect, avail.y)
-    } else {
-        egui::vec2(avail.x, avail.x / fb_aspect)
-    }
-}
 
 /// Resolve a config path to an absolute string for display — a relative path is
 /// joined to the process working directory (where the emulator actually looks
@@ -98,13 +89,6 @@ fn picked_path(path: &std::path::Path) -> String {
     relative.unwrap_or_else(|| path.to_path_buf()).to_string_lossy().into_owned()
 }
 
-/// How far (in device pixels per emulated pixel) the fit may exceed a whole
-/// device-pixel scale and still be drawn at exactly that scale. Makes an
-/// integer scale "sticky" when the window is a little larger than it needs to
-/// be (window-manager rounding, a free resize that lands near 1×): the picture
-/// is drawn pixel-exact with a thin border instead of stretched by a fraction
-/// of a percent — which NEAREST can only do by dropping whole rows.
-const FB_INTEGER_SNAP: f32 = 0.02;
 
 /// Repaint follow-up (ms) while frames are arriving. The frame sinks wake the
 /// GUI the instant a frame is published, so this is only insurance against a
@@ -133,19 +117,8 @@ const REPAINT_IDLE_MS: u64 = 250;
 /// panel would clip rows off the picture, which is the bug this exists to fix.
 /// Off an integer, returns the aspect-preserving fit to be drawn with LINEAR.
 fn fb_draw_size(avail: egui::Vec2, px: egui::Vec2, ppp: f32, max_scale: f32) -> (egui::Vec2, bool) {
-    let mut fit = fb_fit_size(avail, px);
-    if px.x < 1.0 || px.y < 1.0 || ppp <= 0.0 { return (fit, true); }
-    if max_scale > 0.0 && fit.y > px.y * max_scale {
-        fit = px * max_scale;
-    }
-    let dev = fit.y * ppp / px.y;
-    // The epsilon absorbs float error when the fit is exactly an integer.
-    let n = (dev + 1e-3).floor();
-    if n >= 1.0 && dev - n <= FB_INTEGER_SNAP {
-        (px * (n / ppp), true)
-    } else {
-        (fit, false)
-    }
+    let ((w, h), integer) = iris_gui_core::controller::display::draw_size((avail.x, avail.y), (px.x, px.y), ppp, max_scale, false);
+    (egui::vec2(w, h), integer)
 }
 
 /// Centre the framebuffer in `outer` and put its edges on the device-pixel
@@ -344,11 +317,6 @@ struct App {
     /// Per-frame state for the egui→PS2 input pump (modifier diff,
     /// mouse button mask, last cursor position).
     input_state: input::InputState,
-    /// Previous frame's `cpu_halted` status, so we can edge-detect the guest
-    /// becoming "safe to stop" and auto-release the captured mouse/keyboard
-    /// exactly once on that transition. Reset to true on Start so the initial
-    /// idle-at-PROM state doesn't count as a halt.
-    prev_cpu_halted: bool,
     /// Active "Test Camera" preview (None when the window is closed). Opening it
     /// starts host-camera capture; dropping it releases the device.
     camera_test: Option<camera_test::CameraTest>,
@@ -448,7 +416,6 @@ impl App {
             fb_scale: 0.0,
             pending_fb_snap: false,
             input_state: input::InputState::default(),
-            prev_cpu_halted: true,
             camera_test: None,
             camera_test_tex: None,
             camera_test_seq: 0,
@@ -1096,9 +1063,8 @@ impl App {
                 self.draw_cow_menu(ui);
             }); }
             ui.menu_button(t!("menu-view"), |ui| {
-                if ui.button(if self.fullscreen { t!("menu-view-exit-fullscreen") } else { t!("menu-view-fullscreen") }).clicked() {
-                    self.fullscreen = !self.fullscreen;
-                    ctx.send_viewport_cmd(ViewportCommand::Fullscreen(self.fullscreen));
+                if ui.button(if self.app.display().fullscreen() { t!("menu-view-exit-fullscreen") } else { t!("menu-view-fullscreen") }).clicked() {
+                    self.run_app(AppAction::Display(DisplayAction::ToggleFullScreen));
                     ui.close();
                 }
                 ui.horizontal(|ui| {
@@ -1284,9 +1250,9 @@ impl App {
 
     /// Capture state for the control column; only *capture* is a button, since while captured the grabbed pointer can't click anything.
     fn capture_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.input_state.captured {
+        if self.app.display().captured() {
             ui.label(RichText::new(t!("main-capture-on")).color(Color32::LIGHT_GREEN));
-            ui.label(RichText::new(t!("main-capture-release", keys = input::RELEASE_HINT)).weak());
+            ui.label(RichText::new(self.app.display().release_hint()).weak());
             subtitle(ui, t!("main-capture-f11-subtitle"));
         } else {
             ui.label(RichText::new(t!("main-capture-off")).weak());
@@ -1297,7 +1263,8 @@ impl App {
                 )
                 .clicked()
             {
-                input::engage_capture(ctx, &mut self.input_state);
+                let _ = ctx;
+                self.run_app(AppAction::Display(DisplayAction::Capture));
             }
         }
     }
@@ -1661,6 +1628,7 @@ impl App {
             });
             return;
         }
+        let mut capture_clicked = false;
         ui.columns(2, |cols| {
             cols[0].vertical(|ui| {
                 ui.label(RichText::new(t!("fb-head", head = 0)).small().weak());
@@ -1672,7 +1640,7 @@ impl App {
                         let (response, _) = Self::paint_fb(ui, tex, max_scale);
                         if response.clicked() {
                             response.request_focus();
-                            self.input_state.captured = true;
+                            capture_clicked = true;
                         }
                     }
                 } else {
@@ -1700,6 +1668,9 @@ impl App {
                 }
             });
         });
+        if capture_clicked {
+            self.run_app(AppAction::Display(DisplayAction::Capture));
+        }
     }
 
     /// Paint a framebuffer texture centred in the remaining space, on the
@@ -1871,7 +1842,7 @@ impl App {
             if tex_size.y >= 1.0 {
                 new_fb_scale = fb_rect.height() * zoom / tex_size.y;
             }
-            let captured = self.input_state.captured;
+            let captured = self.app.display().captured();
             {
                 // Take keyboard focus so that egui delivers Key events
                 // to us instead of routing them to other widgets when
@@ -1926,22 +1897,16 @@ impl App {
         // triggered on the running→halted transition (prev is reset to true at
         // Start, so idling at the PROM during boot doesn't count), and they can
         // still click the display to re-capture.
-        let halted = self.app.session().handle().status.cpu_halted;
-        if halted && !self.prev_cpu_halted && self.input_state.captured {
-            input::force_release(ui.ctx(), &mut self.input_state);
-            self.toast(t!("toast-guest-halted"));
-        }
-        self.prev_cpu_halted = halted;
 
         // A guest power-off folds pending CHD diffs at once (SessionController::drain).
 
         // Pump egui input → PS/2 controller. Mouse/keyboard only reach the
         // guest while captured (click the framebuffer to capture, Ctrl+Alt+Esc
         // to release), so menu clicks and config typing don't leak in.
-        let ps2 = self.app.session().handle().ps2.lock().clone();
-        if let Some(ps2) = ps2 {
-            input::pump(ui.ctx(), fb_clicked, &ps2, &mut self.input_state, self.app.config().mouse_scroll_pixels_per_line);
+        for action in input::pump(ui.ctx(), fb_clicked, self.app.display().captured()) {
+            self.run_app(AppAction::Display(action));
         }
+        input::sync_cursor(ui.ctx(), &mut self.input_state, self.app.display().captured());
 
     }
 
@@ -2801,8 +2766,15 @@ impl eframe::App for App {
         // way to send a real F11 keystroke through to the guest (plain F11 never
         // reaches IRIX because this toggle eats it). input::pump forwards that
         // chord to the guest while captured.
-        if ctx.input(|i| i.key_pressed(egui::Key::F11) && !(i.modifiers.ctrl && i.modifiers.alt)) {
-            self.fullscreen = !self.fullscreen;
+        // While captured, F11 goes to the display controller with the other keys.
+        if !self.app.display().captured()
+            && ctx.input(|i| i.key_pressed(egui::Key::F11) && !(i.modifiers.ctrl && i.modifiers.alt))
+        {
+            self.run_app(AppAction::Display(DisplayAction::ToggleFullScreen));
+        }
+        // The window follows the controller's full-screen state.
+        if self.fullscreen != self.app.display().fullscreen() {
+            self.fullscreen = self.app.display().fullscreen();
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(self.fullscreen));
         }
 
@@ -2875,7 +2847,8 @@ impl eframe::App for App {
                 // Idle + editing: config fills the whole pane (welcome hidden).
                 // A small margin gives it breathing room (the central frame is
                 // edge-to-edge for the framebuffer).
-                input::force_release(ui.ctx(), &mut self.input_state);
+                self.run_app(AppAction::Display(DisplayAction::Release));
+                input::sync_cursor(ui.ctx(), &mut self.input_state, false);
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| self.config_editor_panel(ui));
@@ -2902,7 +2875,8 @@ impl eframe::App for App {
                 }
                 // Emulator not running: make sure a leftover mouse capture is
                 // released so the host cursor isn't stuck hidden/locked.
-                input::force_release(ui.ctx(), &mut self.input_state);
+                self.run_app(AppAction::Display(DisplayAction::Release));
+                input::sync_cursor(ui.ctx(), &mut self.input_state, false);
                 self.welcome_panel(ui);
             }
         });
@@ -3105,32 +3079,6 @@ mod fb_scaling_tests {
     const FB: egui::Vec2 = egui::vec2(1280.0, 1024.0);
 
     #[test]
-    fn exact_fit_is_integer_and_nearest() {
-        assert_eq!(fb_draw_size(FB, FB, 1.0, 0.0), (FB, true));
-        assert_eq!(fb_draw_size(FB, FB, 2.0, 0.0), (FB, true)); // Retina 1× = 2 device px
-        assert_eq!(fb_draw_size(FB * 2.0, FB, 1.0, 0.0), (FB * 2.0, true));
-    }
-
-    #[test]
-    fn slightly_large_window_snaps_down_never_up() {
-        // Window-manager slack / a free resize a few pixels past 1×.
-        let (size, nearest) = fb_draw_size(egui::vec2(1290.0, 1034.0), FB, 1.0, 0.0);
-        assert_eq!((size, nearest), (FB, true));
-        // A hair short of 1× must not be drawn at 1× (that clips rows); it is
-        // a filtered fit instead.
-        let (size, nearest) = fb_draw_size(egui::vec2(1280.0, 1020.0), FB, 1.0, 0.0);
-        assert!(!nearest);
-        assert!(size.y <= 1020.0);
-    }
-
-    #[test]
-    fn fractional_fit_is_filtered() {
-        let (size, nearest) = fb_draw_size(egui::vec2(1600.0, 1280.0), FB, 1.0, 0.0);
-        assert!(!nearest);
-        assert_eq!(size, egui::vec2(1600.0, 1280.0));
-    }
-
-    #[test]
     fn rect_lands_on_device_pixel_grid() {
         for ppp in [1.0_f32, 1.5, 2.0] {
             // Odd leftover space puts the centred origin on a half pixel.
@@ -3144,23 +3092,6 @@ mod fb_scaling_tests {
         }
     }
 
-    #[test]
-    fn larger_window_is_capped_at_vm_scale_and_centred() {
-        // Fullscreen 1080p minus the 186pt control column, VM screen at 1x.
-        let outer = egui::Rect::from_min_size(egui::pos2(186.0, 0.0), egui::vec2(1734.0, 1080.0));
-        let (rect, nearest) = fb_draw_rect(outer, FB, 1.0, 1.0);
-        assert!(nearest);
-        assert_eq!(rect.size(), FB);
-        assert_eq!(rect.center().round(), outer.center().round());
-        // Retina, 1x = 2 device px: still capped at 1280x1024 points.
-        assert_eq!(fb_draw_size(egui::vec2(3000.0, 2000.0), FB, 2.0, 1.0), (FB, true));
-        // 0.5x on Retina = 1 device px per emulated pixel: crisp.
-        assert_eq!(fb_draw_size(egui::vec2(3000.0, 2000.0), FB, 2.0, 0.5), (FB * 0.5, true));
-        // A window too small for the setting still shrinks to fit.
-        let (size, nearest) = fb_draw_size(egui::vec2(1000.0, 800.0), FB, 1.0, 1.0);
-        assert!(!nearest);
-        assert!(size.y <= 800.0);
-    }
 }
 
 #[cfg(test)]

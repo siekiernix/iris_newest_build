@@ -20,6 +20,7 @@
 //!   the glyph.
 
 pub mod app;
+pub mod display;
 pub mod icons;
 pub mod ids;
 pub mod keys;

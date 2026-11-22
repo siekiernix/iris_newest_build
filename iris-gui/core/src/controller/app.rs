@@ -64,6 +64,8 @@ pub enum AppAction {
     Flush,
     /// The user asked to quit (window close, menu, Cmd+Q).
     RequestQuit,
+    /// A display action: capture, keys and pointer, full screen, scaling.
+    Display(super::display::DisplayAction),
     /// A session action: power, saved states, discs, disks.
     Session(super::session::SessionAction),
     Answer(Answer),
@@ -109,6 +111,7 @@ pub struct AppController {
     cfg: MachineConfig,
     dirty_since: Option<Instant>,
     session: SessionController,
+    display: super::display::DisplayController,
     notify: Arc<dyn Notify>,
     /// Problems found the last time the library was checked, by machine.
     problems: std::collections::BTreeMap<String, String>,
@@ -156,6 +159,7 @@ impl AppController {
             cfg,
             dirty_since: None,
             session: SessionController::spawn(notify.clone()),
+            display: Default::default(),
             notify,
             problems: Default::default(),
             pending_machine: None,
@@ -213,6 +217,20 @@ impl AppController {
 
     pub fn session_mut(&mut self) -> &mut SessionController {
         &mut self.session
+    }
+
+    pub fn display(&self) -> &super::display::DisplayController {
+        &self.display
+    }
+
+    /// A message over the display: why there is no picture.
+    pub fn display_overlay(&self) -> Option<String> {
+        use super::session::RunState;
+        match self.session.run_state() {
+            RunState::PoweredOff => Some(t!("fb-powered-off")),
+            RunState::Starting => Some(t!("status-starting")),
+            RunState::Stopped | RunState::Running | RunState::Halted => None,
+        }
     }
 
     pub fn notify(&self) -> Arc<dyn Notify> {
@@ -732,6 +750,12 @@ impl Controller for AppController {
             }
             AppAction::RequestQuit => self.request_quit(&mut fx),
             AppAction::Session(a) => self.session_apply(a, &mut fx),
+            AppAction::Display(a) => {
+                let ps2 = self.session.ps2();
+                let guest = ps2.as_deref().map(|p| p as &dyn super::display::GuestInput);
+                let per_line = self.cfg.mouse_scroll_pixels_per_line;
+                fx.extend(self.display.apply(a, guest, &mut self.prefs, per_line));
+            }
             AppAction::Answer(a) => {
                 if a.purpose().starts_with("session.") {
                     self.session_apply(super::session::SessionAction::Answer(a), &mut fx);
@@ -747,6 +771,16 @@ impl Controller for AppController {
         let mut fx = std::mem::take(&mut self.startup);
         self.session.drain(&mut fx);
         let events = self.route_session_events(&mut fx);
+        use super::session::SessionEvent;
+        if events.iter().any(|e| matches!(e, SessionEvent::Stopped | SessionEvent::Halted | SessionEvent::PoweredOff)) {
+            if self.display.captured() && events.contains(&SessionEvent::Halted) {
+                // Give the cursor back once the guest is safe to stop.
+                fx.push(Effect::Toast(t!("toast-guest-halted")));
+            }
+            self.display.force_release();
+        }
+        let ps2 = self.session.ps2();
+        self.display.tick(ps2.as_deref().map(|p| p as &dyn super::display::GuestInput));
         self.session_events.extend(events);
         if self.dirty_since.is_some_and(|t| t.elapsed() >= AUTOSAVE_AFTER) {
             self.flush(&mut fx);

@@ -62,6 +62,15 @@ pub struct GuiSettings {
     #[serde(default)]
     pub library_folders: Vec<LibraryFolder>,
 
+    /// How the guest display is sized: fit the window, or `vm_scale`.
+    #[serde(default)]
+    pub display_mode: DisplayMode,
+    /// Draw only at whole multiples of the guest's pixels.
+    #[serde(default)]
+    pub integer_only: bool,
+    #[serde(default)]
+    pub display_filter: DisplayFilter,
+
     /// Runtime storage root, captured before the working directory changes.
     #[serde(skip)]
     root: Option<PathBuf>,
@@ -71,6 +80,28 @@ pub struct GuiSettings {
     /// Protect the legacy JSON if any conversion or preference read failed.
     #[serde(skip)]
     migration_pending: bool,
+}
+
+/// How the guest display is sized (one setting for the application, D22).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DisplayMode {
+    /// As large as the window allows.
+    Fit,
+    /// At `vm_scale`, shrinking only when the window is too small.
+    #[default]
+    Scale,
+}
+
+/// How the guest display is sampled when drawn larger or smaller.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DisplayFilter {
+    /// Nearest at whole multiples, linear between.
+    #[default]
+    Auto,
+    Nearest,
+    Linear,
 }
 
 /// One user folder in the machine library.
@@ -97,6 +128,9 @@ impl Default for GuiSettings {
             bookmarks: BTreeMap::new(),
             disk_folders: Vec::new(),
             library_folders: Vec::new(),
+            display_mode: DisplayMode::default(),
+            integer_only: false,
+            display_filter: DisplayFilter::default(),
             root: None,
             errors: Vec::new(),
             migration_pending: false,
