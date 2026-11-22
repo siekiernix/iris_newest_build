@@ -269,9 +269,13 @@ dialog is unchanged: it still makes an empty image.
 
 ### What the user sees
 
-- Every disk and CD-ROM has a disk icon (hardware list on the summary page,
-  the Devices menu, its status-bar light). It opens a browser window for that
-  device.
+- A "browse files" icon opens the browser for one disk or CD-ROM. It lives
+  in four places (reviewed in mock-ups, 2026-11-22): a main-toolbar button
+  beside Insert Disc (a short list when the machine has several disks); a
+  button at the right edge of each disk and CD-ROM row in the summary's
+  hardware list (the row itself still opens settings); first item of the menu
+  a status-bar disk light opens (then Apply Changes, Roll Back, Disk
+  Settings); and first item of each disk's submenu in Devices.
 - Left: the device's partitions from the SGI volume header, each with its
   type, size and filesystem (EFS, XFS, ext2/3/4, or "not browsable" with the
   reason: swap, volume header, unformatted, unsupported).
@@ -294,7 +298,28 @@ dialog is unchanged: it still makes an empty image.
 | New folder, Delete | `create_directory`, `delete_entry` / `delete_recursive`, with a confirmation that names what goes |
 | Check | `Filesystem::fsck`, report only |
 
-- Dropping files from the host's file manager onto the list is Import.
+- **Drag and drop.** Dropping files or folders from the host's file manager
+  onto the list imports them into the folder being browsed (onto a folder
+  row: into that folder). The drop does not start copying: it opens the
+  Import dialog with the source and destination filled in, so the options
+  and the free-space check are seen first. A drop is refused, with the
+  reason, wherever Import is disabled.
+- **Line endings.** Import offers "Convert text files to Unix line endings"
+  (dos2unix), off by default. It applies only to files that look like text
+  (no NUL bytes in the first block) and never to archives copied as one
+  file. The text editor shows the file's line endings and can convert on
+  save. `rb-fsimporter` has no such option today: either it gains a per-file
+  content filter in a later release, or iris converts into a temporary
+  staging folder and imports that. Prefer the release; do not block the
+  browser on it.
+- Decided defaults (2026-11-22): new files take the destination folder's
+  owner and group; owner and group names are read from the browsed disk's
+  own `/etc/passwd` and `/etc/group`, with numbers always accepted; the text
+  editor refuses files over 1 MB or that look binary and offers Export
+  instead; a `.tardist` is a tar and is unpacked like one unless the user
+  chooses "copy the archive as one file" (what you want before running
+  `inst` on it); the volume-header partition is listed and browsable through
+  `iris::sgi_vh`, read-only.
 
 ### Read-only cases
 
@@ -443,8 +468,8 @@ For the user:
 - Does the box round "This build" mean "move it out of the summary"? The
   user asked for build features to be visible, so do not bury them on a guess.
 
-- Disk browser: mock-ups of the window, the text editor, the permissions
-  dialog and the import and export options have not been drawn or reviewed.
+- Disk browser: for a `.tardist`, should the default be to unpack it or to
+  copy it as one file?
 - Disk browser: Move waits for a rusty-backup release; nobody has asked for
   it there yet.
 
