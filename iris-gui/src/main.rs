@@ -375,7 +375,7 @@ impl App {
             started_banks: None,
             started_cpu: None,
             tab: Tab::General,
-            bench: bench_ui::BenchState::default(),
+            bench: bench_ui::BenchState::new(app.notify()),
             toast: None,
             app,
             effects: effects::EffectHost::default(),
@@ -467,7 +467,13 @@ impl App {
             };
             self.show_config_editor = true;
         }
-        for a in out.answers { self.run_app(AppAction::Answer(a)); }
+        for a in out.answers {
+            if a.purpose().starts_with("bench.") {
+                self.bench.answer(a);
+            } else {
+                self.run_app(AppAction::Answer(a));
+            }
+        }
     }
 
 
@@ -2604,6 +2610,8 @@ impl eframe::App for App {
         if let Some(answer) = self.effects.show(ctx) {
             self.run_app(AppAction::Answer(answer));
         }
+        let bench_fx = std::mem::take(&mut self.bench.effects);
+        self.run_effects(bench_fx);
 
         // F11 toggles fullscreen — except Ctrl+Alt+F11, which is reserved as the
         // way to send a real F11 keystroke through to the guest (plain F11 never
