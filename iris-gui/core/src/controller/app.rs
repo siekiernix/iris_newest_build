@@ -64,6 +64,8 @@ pub enum AppAction {
     Flush,
     /// The user asked to quit (window close, menu, Cmd+Q).
     RequestQuit,
+    /// Networking help and packet-capture permission.
+    Network(super::network::NetworkAction),
     /// The serial console window.
     Serial(super::serial::SerialAction),
     /// A settings edit on the selected machine.
@@ -118,6 +120,7 @@ pub struct AppController {
     display: super::display::DisplayController,
     settings: super::settings::SettingsController,
     serial: super::serial::SerialConsoleController,
+    pub(crate) network: super::network::NetworkController,
     notify: Arc<dyn Notify>,
     /// Problems found the last time the library was checked, by machine.
     problems: std::collections::BTreeMap<String, String>,
@@ -168,6 +171,7 @@ impl AppController {
             display: Default::default(),
             settings: Default::default(),
             serial: Default::default(),
+            network: super::network::NetworkController::new(),
             notify,
             problems: Default::default(),
             pending_machine: None,
@@ -767,6 +771,7 @@ impl Controller for AppController {
             }
             AppAction::RequestQuit => self.request_quit(&mut fx),
             AppAction::Session(a) => self.session_apply(a, &mut fx),
+            AppAction::Network(a) => self.network_apply(a, &mut fx),
             AppAction::Serial(a) => self.serial.apply(a, &self.cfg, self.notify.clone()),
             AppAction::Settings(a) => {
                 use super::settings::{SettingsAction, SettingsController};
@@ -797,7 +802,9 @@ impl Controller for AppController {
                 fx.extend(self.display.apply(a, guest, &mut self.prefs, per_line));
             }
             AppAction::Answer(a) => {
-                if a.purpose().starts_with("settings.") {
+                if a.purpose().starts_with("network.") {
+                    self.network_apply(super::network::NetworkAction::Answer(a), &mut fx);
+                } else if a.purpose().starts_with("settings.") {
                     fx.extend(self.apply(AppAction::Settings(super::settings::SettingsAction::Answer(a))));
                 } else if a.purpose().starts_with("session.") {
                     self.session_apply(super::session::SessionAction::Answer(a), &mut fx);
@@ -824,9 +831,11 @@ impl Controller for AppController {
         let ps2 = self.session.ps2();
         self.display.tick(ps2.as_deref().map(|p| p as &dyn super::display::GuestInput));
         if events.contains(&SessionEvent::Started) {
+            self.network.started();
             self.serial.reconnect(&self.cfg, self.notify.clone());
         }
         self.session_events.extend(events);
+        self.network_tick(&mut fx);
         if self.dirty_since.is_some_and(|t| t.elapsed() >= AUTOSAVE_AFTER) {
             self.flush(&mut fx);
         }

@@ -18,7 +18,7 @@ mod scsi_menu;
 // The toolkit-free model, shared with the native shells. Bound at the crate
 // root so `crate::handle::Cmd` and friends keep their paths.
 use iris_gui_core::model::{
-    capture_access, framebuffer, handle, machines, netfix, netplan, ram,
+    capture_access, framebuffer, handle, machines, netplan, ram,
     serial_console, settings, single_instance, summary,
 };
 
@@ -253,21 +253,11 @@ struct App {
     /// Set when the Networking tab commits a subnet that fails the sanity checks
     /// (non-RFC1918 or a host conflict); drives the Override/Cancel modal.
     net_sanity_modal: Option<NetSanityModal>,
-    /// `true` while the "Enable packet capture" prompt is open — raised either by
-    /// the user's button in the Network tab or automatically when a pcap-mode
-    /// machine reports `PcapStatus::PermissionDenied` on Start.
-    pcap_perm_modal: bool,
-    /// One-shot guard so the automatic permission prompt fires at most once per
-    /// run (reset on `Evt::Started`); without it the modal would re-open every
-    /// frame the capture stays denied.
-    pcap_perm_prompted: bool,
     new_machine: NewMachineDialog,
     create_disk: CreateDiskDialog,
     /// If true, central panel shows the tabbed config editor; otherwise the
     /// welcome/status summary panel (default — most config lives in menus).
     show_config_editor: bool,
-    /// Whether the "Check networking" diagnosis window is open.
-    show_net_check: bool,
     save_state_name: String,
     restore_state_name: String,
     /// egui texture holding the most recent REX3 framebuffer. Allocated
@@ -396,12 +386,9 @@ impl App {
             confirm_embedded_prom: false,
             net_ifaces: netplan::gather_host_ifaces(),
             net_sanity_modal: None,
-            pcap_perm_modal: false,
-            pcap_perm_prompted: false,
             new_machine,
             create_disk: CreateDiskDialog::default(),
             show_config_editor: false,
-            show_net_check: false,
             save_state_name: "snap1".into(),
             restore_state_name: "snap1".into(),
             fb_tex: None,
@@ -434,21 +421,6 @@ impl App {
         self.pcap_ifaces = Some(config_ui::enumerate_pcap_ifaces());
     }
 
-    /// Run the platform's "grant packet-capture permission" flow and report the
-    /// result. Invoked by the Network tab's "Enable packet capture…" button and
-    /// by the automatic permission-denied prompt. The per-OS work lives in
-    /// `capture_access` (Linux pkexec/setcap, macOS ChmodBPF, Windows Npcap).
-    fn run_enable_packet_capture(&mut self) {
-        use capture_access::EnableOutcome;
-        // Dismiss the prompt regardless of outcome; the user made a choice.
-        self.pcap_perm_modal = false;
-        match capture_access::enable_packet_capture() {
-            EnableOutcome::Enabled => self.toast(t!("toast-pcap-enabled")),
-            EnableOutcome::NeedsRelaunch(msg) => self.toast(msg),
-            EnableOutcome::Cancelled => {}
-            EnableOutcome::Failed(why) => self.toast(why),
-        }
-    }
 
     fn toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), std::time::Instant::now()));
@@ -635,9 +607,6 @@ impl App {
         for event in self.app.take_session_events() {
             match event {
                 SessionEvent::Started => {
-                    // Fresh run: re-arm the one-shot PCAP permission prompt so a
-                    // pcap-mode machine that can't open its capture re-prompts.
-                    self.pcap_perm_prompted = false;
                     let started = self.app.session().started_config().cloned();
                     self.started_banks = started.as_ref().map(|c| c.banks);
                     self.started_cpu = started.as_ref().map(|c| c.cpu());
@@ -658,16 +627,6 @@ impl App {
                 }
                 SessionEvent::Stopped | SessionEvent::Halted | SessionEvent::PoweredOff | SessionEvent::SyncDone => {}
             }
-        }
-        // Automatic PCAP elevation prompt: a pcap-mode machine that couldn't open
-        // its raw capture for lack of privilege reports `PermissionDenied`. Raise
-        // the same "Enable packet capture" prompt the Network tab button uses,
-        // once per run (the one-shot guard avoids re-opening it every frame).
-        if !self.pcap_perm_prompted
-            && self.app.session().handle().pcap_status() == iris::net::PcapStatus::PermissionDenied
-        {
-            self.pcap_perm_prompted = true;
-            self.pcap_perm_modal = true;
         }
 
         // Repaint cadence. The frame sinks wake us the moment a frame lands
@@ -1268,21 +1227,12 @@ impl App {
     /// mismatch — no guest login required (detection is from frames the guest
     /// already emits). The permanent auto-fix over telnet comes later.
     fn network_check_window(&mut self, ctx: &egui::Context) {
-        if !self.show_net_check {
+        use iris_gui_core::controller::network::{CheckLine, NetworkAction};
+        if !self.app.network().check_open() {
             return;
         }
-        let state = self.app.session().handle().net_state();
-        let guest = self.app.session().handle().status.net_guest_ip;
-        let gw = self.app.session().handle().status.net_guest_gateway;
-        // The configured NAT subnet, for fresh-guest guidance and the
-        // "match the guest" action. IRIS is plug-and-play: it ADOPTS whatever
-        // gateway the guest ARPs for (src/net/mod.rs), so the guest's own subnet is
-        // fine — there is no fixed address it must use once ec0 is configured.
-        let (eb, ep) = netplan::parse_cidr(self.app.config().nat_subnet.as_deref());
-        let cfg_net = netplan::classify(eb, ep, &[]).derived;
-        let fresh_hint = cfg_net.as_ref().map(|d| t!("window-net-fresh-hint",
-            ip = d.client.to_string(), gateway = d.gateway.to_string(), netmask = d.netmask.to_string()));
-        let mut switch_to: Option<String> = None;
+        let check = self.app.net_check();
+        let mut adopt = None;
         let mut open = true;
         egui::Window::new(t!("window-net-title"))
             .collapsible(false)
@@ -1291,108 +1241,27 @@ impl App {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.set_max_width(440.0);
-                match state {
-                    NetState::Off => {
-                        ui.label(t!("window-net-not-running"));
-                        return;
-                    }
-                    NetState::Active => {
-                        ui.label(RichText::new(t!("window-net-up"))
-                            .color(Color32::from_rgb(0x35, 0xb8, 0x4a)).strong());
-                        ui.label(match guest {
-                            Some(i) => t!("window-net-up-detail", ip = i.to_string()),
-                            None => t!("window-net-up-detail-no-ip"),
-                        });
-                        if let Some(g) = gw {
-                            ui.label(RichText::new(t!("window-net-gateway", gateway = g.to_string())).weak());
-                        }
-                        return;
-                    }
-                    NetState::Idle => {} // running but no traffic — diagnose below
-                }
-                let Some(ip) = guest else {
-                    ui.label(RichText::new(t!("window-net-no-traffic")).strong());
-                    ui.label(t!("window-net-no-traffic-detail"));
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(t!("window-net-enable")).strong());
-                    ui.code("chkconfig network on");
-                    ui.label(RichText::new(t!("window-net-enable-detail")).weak());
-                    if let Some(l) = &fresh_hint { ui.label(RichText::new(l).weak()); }
-                    return;
-                };
-                let o = ip.octets();
-                let guest_net = std::net::Ipv4Addr::new(o[0], o[1], o[2], 0);
-                let sub_gw = std::net::Ipv4Addr::new(o[0], o[1], o[2], 1);
-                ui.label(RichText::new(t!("window-net-down"))
-                    .color(Color32::from_rgb(0xd9, 0x4a, 0x3d)).strong());
-                ui.label(t!("window-net-guest-ip", ip = ip.to_string(), network = format!("{guest_net}/24")));
-                ui.add_space(6.0);
-                match gw {
-                    Some(g) => {
-                        ui.label(t!("window-net-has-gateway", gateway = g.to_string()));
-                        ui.label(RichText::new(t!("window-net-has-gateway-detail")).weak());
-                    }
-                    None => {
-                        ui.label(t!("window-net-no-gateway"));
-                        ui.add_space(4.0);
-                        ui.label(RichText::new(t!("window-net-run-as-root")).strong());
-                        ui.code(format!("/usr/etc/route add default {sub_gw} 1"));
-                        ui.label(RichText::new(t!("window-net-route-temporary")).weak());
+                for line in &check.lines {
+                    match line {
+                        CheckLine::Good(t) => { ui.label(RichText::new(t).color(Color32::from_rgb(0x35, 0xb8, 0x4a)).strong()); }
+                        CheckLine::Bad(t) => { ui.label(RichText::new(t).color(Color32::from_rgb(0xd9, 0x4a, 0x3d)).strong()); }
+                        CheckLine::Text(t) => { ui.label(t); }
+                        CheckLine::Weak(t) => { ui.label(RichText::new(t).weak()); }
+                        CheckLine::Strong(t) => { ui.add_space(4.0); ui.label(RichText::new(t).strong()); }
+                        CheckLine::Code(t) => { ui.code(t); }
                     }
                 }
-                // Optional: align IRIS's configured subnet to the guest's, for a
-                // guest kept permanently on a fixed subnet. IRIS adopts live
-                // regardless; this just makes IRIS's default match on next boot.
-                let cfg_base = cfg_net.as_ref().map(|d| d.network);
-                if cfg_base != Some(guest_net) {
-                    ui.add_space(6.0);
-                    ui.separator();
-                    match netplan::conflict(guest_net, 24, &self.net_ifaces) {
-                        Some(h) => {
-                            // The guest's subnet is one the host itself uses.
-                            // Refuse to move IRIS there (it would shadow the
-                            // host's real network); tell the user to renumber the
-                            // guest onto IRIS's own subnet instead.
-                            ui.label(RichText::new(t!("window-net-overlap",
-                                network = format!("{guest_net}/24"), iface = &h.name, addr = h.addr.to_string()))
-                                .color(Color32::from_rgb(0xd9, 0x4a, 0x3d)));
-                            if let Some(d) = cfg_net.as_ref() {
-                                ui.add_space(4.0);
-                                ui.label(RichText::new(t!("window-net-run-as-root")).strong());
-                                let e = netfix::ExpectedNet { ip: d.client, gateway: d.gateway, netmask: d.netmask };
-                                for cmd in netfix::runtime_fix_commands(&e) {
-                                    ui.code(cmd);
-                                }
-                                ui.label(RichText::new(t!("window-net-overlap-result",
-                                    ip = d.client.to_string(), gateway = d.gateway.to_string())).weak());
-                            }
-                        }
-                        None => {
-                            ui.label(RichText::new(match cfg_net.as_ref() {
-                                Some(d) => t!("window-net-nat-subnet", network = format!("{}/{}", d.network, d.prefix)),
-                                None => t!("window-net-nat-subnet-other"),
-                            }).weak());
-                            if ui.button(t!("window-net-use-guest-subnet", network = format!("{guest_net}/24"))).clicked() {
-                                switch_to = Some(format!("{guest_net}/24"));
-                            }
-                        }
+                if let Some(net) = &check.adopt {
+                    if ui.button(t!("window-net-use-guest-subnet", network = net.as_str())).clicked() {
+                        adopt = Some(net.clone());
                     }
                 }
             });
-        if let Some(s) = switch_to {
-            self.app.config_mut().nat_subnet = Some(s.clone());
-            self.mark_dirty();
-            if self.app.session().handle().is_running() {
-                // Apply to the running NAT so the guest can route immediately,
-                // and persist for next launch.
-                self.app.session().handle().send(Cmd::SetNatSubnet(s.clone()));
-                self.toast(t!("toast-nat-subnet-live", network = &s));
-            } else {
-                self.toast(t!("toast-nat-subnet-next-start", network = &s));
-            }
+        if let Some(s) = adopt {
+            self.run_app(AppAction::Network(NetworkAction::AdoptSubnet(s)));
         }
         if !open {
-            self.show_net_check = false;
+            self.run_app(AppAction::Network(NetworkAction::CloseCheck));
         }
     }
 
@@ -1480,7 +1349,7 @@ impl App {
             }
         });
         if want_check {
-            self.show_net_check = true;
+            self.run_app(AppAction::Network(iris_gui_core::controller::network::NetworkAction::OpenCheck));
         }
         // Disk, CD-ROM and audio activity lights from the session's status bar.
         {
@@ -1971,7 +1840,7 @@ impl App {
             ConfigAction::RequestEmbeddedProm => self.confirm_embedded_prom = true,
             ConfigAction::TestCamera => self.open_camera_test(),
             ConfigAction::RefreshPcapIfaces => self.refresh_pcap_ifaces(),
-            ConfigAction::EnablePacketCapture => self.run_enable_packet_capture(),
+            ConfigAction::EnablePacketCapture => self.run_app(AppAction::Network(iris_gui_core::controller::network::NetworkAction::AskEnableCapture)),
             ConfigAction::LoadDisc { id, path, remount } => {
                 if self.app.session().is_running() {
                     let _ = remount;
@@ -2987,30 +2856,6 @@ impl eframe::App for App {
         // permission-denied capture). "Enable" runs the platform privilege flow;
         // "Not now" just dismisses — the guest keeps running on NAT-less PCAP
         // (i.e. no networking) until the user enables capture or switches to NAT.
-        if self.pcap_perm_modal {
-            let mut do_enable = false;
-            let mut close = false;
-            egui::Window::new(t!("modal-pcap-title"))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.set_max_width(440.0);
-                    ui.label(RichText::new(t!("modal-pcap-body")).strong());
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(capture_access::permission_hint()).weak());
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.add(crate::extra_ui::filled_button(t!("modal-pcap-enable"), Color32::from_rgb(60, 90, 140))).clicked()
-                        {
-                            do_enable = true;
-                        }
-                        if ui.button(t!("modal-pcap-not-now")).clicked() { close = true; }
-                    });
-                });
-            if do_enable { self.run_enable_packet_capture(); } // also clears the modal
-            if close { self.pcap_perm_modal = false; }
-        }
 
         // The window starts hidden so the first frame(s) can fit it to the
         // monitor (the launcher fit, when not running) before it's shown —
