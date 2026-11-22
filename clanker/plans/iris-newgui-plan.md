@@ -67,7 +67,7 @@ When #797 merges, rebase `iris-newgui` onto `main`. Do not put GUI commits on
 | D19 | Each native shell crate is one line in the root `Cargo.toml` `members`, with its dependencies and code gated on its own `cfg(target_os)`, so `cargo build --workspace` elsewhere builds an empty binary. |
 | D20 | Opening the hung KONA test was out of scope; it is ignored and written up separately. |
 | D21 | No importing of CLI `.toml` files into the library (2026-11-21). Machines are created in the GUI; their files remain core-schema TOML. |
-| D23 | Disk tools in the GUI, built on the `../rusty-backup` crates (2026-11-21): create a blank disk that already carries an SGI volume header (with an EFS or XFS filesystem), and copy files into and out of a machine's disk from the host. SGI label, EFS and XFS are all in. See [Disk tools](#disk-tools-rusty-backup-crates). |
+| D23 | A disk browser in the GUI, built on the published rusty-backup crates (2026-11-22): open a machine's disk or CD-ROM, look through EFS, XFS and ext partitions, and import, export and edit files. **No provisioning**: a new disk is an empty image and the user runs `fx`, because fx chooses the root and swap split itself (`clanker/irix/fx-label-create-writes-root-and-swap.md`). No formatting either; the OS installer does that. See [Disk browser](#disk-browser-rusty-backup-crates). |
 | D22 | Display scale is one setting for the whole application, not per machine (2026-11-21). No core config key. |
 
 ## Layout on disk
@@ -122,7 +122,7 @@ frame path keeps its own wake (`FrameSink`), separate from controller wakes.
 | `SettingsController` | the machine config as a form schema (below), validation, refit on profile change, missing-disk preflight | `config_ui.rs`, `extra_ui.rs`, `summary.rs` |
 | `NetworkController` | NAT/PCAP mode, subnet presets and overlap warnings, live port forwards, "check networking", PCAP elevation | `netplan.rs`, `netfix.rs`, `capture_access.rs` |
 | `SerialConsoleController` | console port routing, scrollback, input, the serial light | `serial_console.rs` |
-| `DiskToolsController` | new-disk provisioning (label, EFS, XFS), the disk browser (list, copy out, copy in, new folder, rename, delete, check), enablement by run state | new; `dialogs/create_disk.rs` for the blank-disk part |
+| `DiskBrowserController` | the disk browser: partitions, listing, selection, import and export (files, folders, archives), text edit, chmod, chown, rename, move, delete, check; read-only rules and their reasons; the jobs behind them | new |
 | `BenchController` | benchmark run, progress, results | `bench_ui.rs` |
 | `DebugController` | monitor port, perfetto start/stop, diagnostics text, build features | `config_ui.rs` Debug tab |
 | `CameraTestController` | VINO/IndyCam source test | `camera_test.rs` |
@@ -210,7 +210,7 @@ sync pending), every CD-ROM (disc loaded, activity; click to insert or eject),
 network (NAT or PCAP, activity, guest IP, fault badge that opens the
 diagnosis), serial console, audio, camera, input capture (with the release
 chord), display scale, MIPS, kernel Hz. Greyed out when the machine is
-stopped.
+stopped. A disk's or CD-ROM's icon opens the [disk browser](#disk-browser-rusty-backup-crates).
 
 Sources: MIPS, Hz, network, PCAP, CHD sync and `dirty_cow` are already in
 `handle.rs` `Status`. Disks and audio come from the new core counters. The
@@ -262,92 +262,122 @@ proposals and live in the controller key map.
   Automation, Diagnostics, Reset NVRAM, Set MAC Address.
 - **Window**, **Help** (guide, report an issue).
 
-## Disk tools (rusty-backup crates)
+## Disk browser (rusty-backup crates)
 
-Two features (D23), both in `iris-gui-core` so every shell gets them:
+One feature (D23), in `iris-gui-core` so every shell gets it. The create-disk
+dialog is unchanged: it still makes an empty image.
 
-1. **Provision a disk.** The existing "create blank disk" dialog gains an
-   "initialise as" choice: empty (today's behaviour), SGI volume header only,
-   SGI volume header with an EFS filesystem, or with an XFS filesystem.
-2. **Browse a disk.** For a disk or CD-ROM of a stopped machine: list its
-   partitions and files, copy files and folders out to the host, and (disks
-   only) copy them in, make folders, rename, delete, and run a check.
+### What the user sees
 
-### What the crates provide
+- Every disk and CD-ROM has a disk icon (hardware list on the summary page,
+  the Devices menu, its status-bar light). It opens a browser window for that
+  device.
+- Left: the device's partitions from the SGI volume header, each with its
+  type, size and filesystem (EFS, XFS, ext2/3/4, or "not browsable" with the
+  reason: swap, volume header, unformatted, unsupported).
+- Right: the selected partition's files as a list with name, size, mode,
+  owner, group and date; folders open in place; a path bar.
+- Actions, each a controller `Action` with a toolbar icon, a menu item and a
+  context-menu entry:
 
-All under `../rusty-backup/crates/`, Rust 1.73 floor, reviewed at `d2258bde`:
+| Action | Notes |
+|---|---|
+| Export | selected files or folders to a host folder (`rb-fsexporter`), with progress and cancel |
+| Export as archive | `.tar` or `.tgz` (`fs-tar` `export_tar`, `TarCompression::None` / `Gzip`) |
+| Import | host files or folders into the current folder (`rb-fsimporter`), after a preflight that checks free space and name collisions |
+| Import archive | a `.tar`, `.tgz` or `.zip` expanded into the current folder (the importer expands these itself) |
+| Import options | what to do with existing names, symlinks, ownership and mode for new files (default root:sys, the host's mode bits), archive expansion on or off |
+| Edit text | open a file in a plain editor, save back. Saving writes a new file and replaces the old one, then restores owner, mode and dates. Refuse files over a size limit or that are not text. |
+| Permissions | chmod (`set_permissions`) and chown (`set_owner`), on one entry or recursively |
+| Rename | `rename`, within the folder |
+| Move | to another folder. **Not available yet**: the filesystem trait only renames within a folder. Wait for the rusty-backup release that adds a move; show the action disabled with that reason until then. Do not fake it with copy and delete. |
+| New folder, Delete | `create_directory`, `delete_entry` / `delete_recursive`, with a confirmation that names what goes |
+| Check | `Filesystem::fsck`, report only |
 
-| Crate | Licence | Use |
+- Dropping files from the host's file manager onto the list is Import.
+
+### Read-only cases
+
+The controller decides, and gives the reason the view shows:
+
+- **The machine is running**: read-only. Browse, export and export as
+  archive work; nothing that writes is offered. The view is of a live disk,
+  so it can be a few seconds stale or briefly inconsistent; say so in the
+  window.
+- **CD-ROMs**: always read-only.
+- **XFS the crate cannot edit**: IRIX volumes with version-1 directories, and
+  Linux v5 volumes with features it does not maintain. `fs-xfs` reports this;
+  pass its reason on.
+- **A filesystem whose check fails**: read-only until the user chooses to
+  continue.
+
+### The crates
+
+All MIT, all on crates.io (the user's statement; `sgi-disk` 0.1.0 and
+`fs-xfs` 0.2.0 checked 2026-11-22). The crates' own summary for iris is
+`../rusty-backup/docs/iris_sgi_crates.md`: read it for exact signatures.
+
+| Crate | Version | Use |
 |---|---|---|
-| `disk-core` | MIT | The traits everything speaks: `filesystem::Filesystem` (root, `list_directory`, `read_file`, `write_file_to`, `fsck`, sizes) and `filesystem::EditableFilesystem` (`create_file`, `create_directory`, `delete_entry`, `delete_recursive`, `rename`, `set_permissions`, `set_owner`, `create_symlink`, `free_space`, `sync_metadata`); `entry::FileEntry`; `sgi::SgiLabelByteOrder`. |
-| `part-tables` (feature `sgi`) | MIT | `sgi::SgiVolumeHeader::{parse, to_bytes}`, `SgiPartitionEntry`, `SgiPartitionType`, `SgiDeviceParameters::for_geometry`, `SgiVolumeDirEntry`; `sgi_dklabel` for the older label. Enable only `sgi`, not the default feature set. |
-| `fs-unix` (feature `efs`) | MIT | `efs::EfsFilesystem::open(reader, partition_offset)`, which is both `Filesystem` and `EditableFilesystem`; `efs::write_blank_efs`; `efs_fsck`, `efs_resize`. Enable only `efs`. |
-| `fs-xfs` | GPL-2.0-only today, **MIT after rusty-backup's relicence** (below) | `xfs::XfsFilesystem::open`, also editable (IRIX v4 dir1/dir2 through Linux v5); `xfs::format::write_blank_xfs`; fsck and repair. |
-| `rb-fsexporter` | MIT | Copy out to the host: `count`, `extract`, `extract_contents`, with `Options` for symlinks, existing files and name collisions, and cancellation. Pulls in `fs-mac`. |
-| `fs-tar` | MIT | `import_sink`: the shared copy-in machinery, including the path-traversal checks. |
+| `sgi-disk` | 0.1.0 | `read_volume_header`, `filesystem_partitions`, `open_partition` / `open_partition_editable`, `open_kind` / `open_kind_editable` for EFS and XFS. Its disk builders are not used. |
+| `disk-core` | 0.3.0 | `Filesystem`, `EditableFilesystem`, `FileEntry` |
+| `fs-unix` | 0.3.0 | features `efs` and `ext`. ext is opened by iris directly, below. |
+| `fs-xfs` | 0.2.0 | through `sgi-disk`'s `xfs` feature. MIT from 0.2.0; never depend on 0.1.x (GPL). |
+| `rb-fsexporter` | 0.2.0 | `extract` with a `Host` for progress and cancel |
+| `rb-fsimporter` | 0.1.0 | `import_dir_with`, `preflight_dir_with`, `measure_dir_for`, `DirImportOptions`, a `Host` for progress and cancel. Choose `native-zstd` or `pure-zstd` by what builds cleanest on every target. |
+| `fs-tar` | 0.2.0 | `export_tar` |
 
-### What is not in a crate yet
+Depend on released versions in `iris-gui/core/Cargo.toml` with
+`default-features = false` and only the features needed. No path or git
+dependencies, and never rusty-backup's main crate (AGPL-3.0). Add the crates
+to iris's third-party notices.
 
-These live in rusty-backup's main crate, which is **AGPL-3.0**. iris is
-BSD-3-Clause, so the main crate must never be a dependency.
+**ext partitions** (Linux guests): `sgi-disk` lists only EFS and XFS, and its
+partition-type list has no Linux type, so a Linux partition parses as
+`Unknown`. That needs no change in rusty-backup. iris takes the full header
+from `read_volume_header` (every entry has its start and size), and for a
+partition that is not EFS or XFS probes for an ext superblock and opens it
+with `fs_unix::ext::ExtFilesystem::open(reader, offset)`, which is both
+`Filesystem` and `EditableFilesystem`.
 
-- `src/partition/sgi_hdd_builder.rs` (`write_sgi_efs_hdd`, `SgiHddOptions`,
-  `compute_sgi_layout`): writes the volume header plus an EFS root. It uses
-  only `fs-unix` and `part-tables`. It hard-codes the geometry iris reports
-  (16 heads, 63 sectors per track; IRIX `fx` rejects a label that disagrees
-  with the drive), lays out VOLHDR in slot 8, VOLUME in slot 10 and EFS in
-  slot 0, omits swap, and is EFS only. A disk it built was mounted by IRIX 5.3
-  in iris (`../rusty-backup/docs/sgi_efs_hdd_irix_debug.md`).
-- `src/fs/dir_import.rs` (`import_dir`, `preflight_dir`, `measure_dir`): host
-  folder into an `EditableFilesystem`, over `fs_tar::import_sink`.
-- `src/fs/mod.rs` `open_editable_filesystem_with`: picks the filesystem for a
-  partition.
+### How iris reaches the disk
 
-Decided 2026-11-21: rusty-backup goes first. Its author is relicensing
-`fs-xfs` to MIT, moving the SGI disk builder (with an XFS variant) and the
-directory import into MIT crates, and publishing them. The iris disk-tools slices wait for that release and
-then depend on the published crates. Do not re-implement those files in
-iris, and never copy AGPL source text. Before starting the slices, read the
-released crates' READMEs for the final names and signatures.
+- **Stopped machine**: open the image with `iris::block_node::open_image`
+  and wrap the `BlockNode` (`read` / `write` at a byte offset, `flush`) as
+  `Read + Write + Seek + Send`. The browser then sees what the guest would
+  (a raw image, a CHD with its diff, a copy-on-write overlay), and writes
+  land where the guest's would: on a copy-on-write disk they go to the
+  overlay, where Apply Changes and Roll Back already work, and an edited CHD
+  leaves a pending sync. Never open the file behind iris's back.
+- **Running machine**: the current contents are partly in the running
+  machine (overlay, CHD diff), so the browser must read through it. This
+  needs a small read-only hook in the core, approved 2026-11-22:
+  *proposed* `Workstation::read_disk(bus, id, offset, &mut [u8]) ->
+  io::Result<()>`, reading the target's block node under the bus lock in
+  short holds so it never stalls the guest for long, with no write
+  counterpart. Like the counters, it goes on its own branch off `main` with
+  its own pull request, not on `iris-newgui`.
+- **Slow work is a job**: listing a big tree, import, export, archive,
+  recursive chmod and check run on a worker with progress and cancel, never
+  in `apply` or `tick` (rusty-backup's `model::job` is the pattern).
+- Closing the window, or powering the machine on, first finishes or cancels
+  the job and calls `sync_metadata`; power-on is refused while a write job
+  runs.
 
-### Rules for using them
+### Not verified
 
-- **Dependencies.** The crates are published on crates.io (the user's
-  statement, 2026-11-21): depend on released versions in
-  `iris-gui/core/Cargo.toml`, with `default-features = false` and only the
-  features above. No path dependencies on `../rusty-backup` and no git
-  dependencies.
-- **XFS is built in everywhere**, the App Store build included, and iris uses
-  `fs-xfs` only once it is MIT. Today the crate is GPL-2.0-only for one
-  reason: `dir_hashname` in `xfs/edit.rs` follows xfsprogs' `xfs_da_hashname`
-  line for line. The crate is otherwise solely its author's. rusty-backup is
-  re-deriving that function from SGI's "XFS Algorithms & Data Structures"
-  document and relicensing the crate to MIT (decided 2026-11-21). Depend on
-  the first MIT release or later, never on a GPL one, and check the
-  published crate's licence field before adding it. No `xfs` Cargo feature.
-- **Go through iris's block layer.** Open the image with
-  `iris::block_node::open_image` and wrap the `BlockNode` (`read`/`write` at
-  a byte offset, `flush`) as `Read + Write + Seek + Send`. The tools then see
-  what the guest sees (a raw image, a CHD with its diff, a copy-on-write
-  overlay), and writes land where the guest's would. Do not open the file
-  behind iris's back.
-- **Only while the machine is stopped.** A running IRIX caches the disk;
-  writing under it corrupts the filesystem. The controller disables the
-  browser for any disk attached to the running machine and says why. Copy in
-  to a copy-on-write disk goes to the overlay, where Apply Changes and Roll
-  Back already work; an edited CHD leaves a pending sync like any other write.
-- **Slow work is a job.** Listing a large tree, copy in, copy out, check and
-  provisioning run on a worker with progress and cancel, never in `apply` or
-  `tick` (rusty-backup's `model::job` is the model to follow).
-- **CD-ROMs are read-only**, and IRIX install discs are EFS: browse and copy
-  out only.
+- None of these crates has been run from iris, and no disk they edited has
+  been mounted by IRIX. Try every write action on a copy of a real IRIX disk,
+  boot it, and run `fsck` / `xfs_check` in the guest before trusting it.
+- `fs-xfs`'s rewritten directory hash was checked against Linux-made
+  volumes, not an IRIX-made one.
+- Whether IRIX 6.5's default XFS directories are the version the crate can
+  edit. If they are not, XFS on IRIX is browse and export only.
 
 ### Overlap with what iris has
 
-- `iris::sgi_vh` and the `mkvh` tool build PROM-bootable volume-header images
-  (boot files in the header directory). Keep them for that; use
-  `part-tables` for parsing and for laying out a data disk.
-- `iris-gui/src/dialogs/create_disk.rs` creates an empty image today.
+`iris::sgi_vh` and the `mkvh` tool build PROM-bootable volume-header images
+and `mkvh dump` prints a header. Keep them; they are not part of the browser.
 
 ## Phases
 
@@ -366,15 +396,16 @@ each one.
 2. **Controllers, egui rewired per slice**, in this order: App (library) ->
    Session (including the counter sampling above) -> Display -> Settings
    (schema and `ProfileTraits`) -> Network -> Serial -> Bench, Debug, Camera
-   -> dialogs -> Disk tools last (a new feature, not parity: read-only
-   browse and copy out first, then provisioning, then copy in and edits). Exit: `iris-gui/src` holds no domain logic and the boundary
+   -> dialogs -> Disk browser last (a new feature, not parity: read-only
+   browse and export first, then import and the edits, then the running-
+   machine read hook once it has landed in the core). Exit: `iris-gui/src` holds no domain logic and the boundary
    script reports 0.
 3. *(dropped, D16: egui keeps its look.)*
 4. **AppKit shell.** 0 app, window, menu bar, wake, library; 1 summary;
    2 Metal presenter, physical-key input (macOS key codes to the
    `winit::keyboard::KeyCode` the PS/2 layer takes), capture, fullscreen,
    detach; 3 status bar; 4 settings sheet (the field kinds); 5 disks, CD,
-   COW, sync on quit, then the disk browser and provisioning; 6 network; 7 serial console; 8 benchmark, debug,
+   COW, sync on quit, then the disk browser; 6 network; 7 serial console; 8 benchmark, debug,
    camera; 9 bundle, signing, notarized DMG, its own bundle id beside the
    egui app.
 5. **Parity check and release** as a preview beside egui; then GTK4 and Win32
@@ -398,6 +429,8 @@ Approved:
 
 - The rusty-backup crates as dependencies of `iris-gui-core` (D23), and the
   matching licence entries in iris's third-party notices.
+- A read-only disk hook on `Workstation` for browsing a running machine's
+  disk (2026-11-22), on its own branch and pull request.
 
 Not approved, ask first: a serial counter in the core; anything else in
 `src/`; any change in `../rusty-backup` (it is a separate repository).
@@ -410,13 +443,14 @@ For the user:
 - Does the box round "This build" mean "move it out of the summary"? The
   user asked for build features to be visible, so do not bury them on a guess.
 
-- Disk tools: what should "SGI label only" lay out: a root and swap ready for
-  an IRIX install, or a single data partition?
+- Disk browser: mock-ups of the window, the text editor, the permissions
+  dialog and the import and export options have not been drawn or reviewed.
+- Disk browser: Move waits for a rusty-backup release; nobody has asked for
+  it there yet.
 
 For the implementer:
 
-- Which crate versions carry the SGI disk builder and the directory import
-  once rusty-backup releases them.
+- The read hook's exact shape, and a text-editor size limit.
 - Not verified here: none of the crates has been run from iris against an
   IRIX-made image, and XFS write support has not been tried on an IRIX disk.
   Test on a copy before trusting copy-in.
