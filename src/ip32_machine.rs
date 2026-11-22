@@ -952,6 +952,27 @@ impl Workstation for O2Machine {
             .chain(self.bus.nvme.get().map(|n| n.scsi_bus().activity()))
             .collect()
     }
+    fn read_disk(&self, bus: usize, id: u8, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        use crate::scsi_monitor::ScsiTargets;
+        let controllers = self.bus.scsi.lock().unwrap().clone();
+        match controllers.get(bus) {
+            Some(c) => c.bus().read_media(id, offset, buf),
+            None if bus == controllers.len() => match self.bus.nvme.get() {
+                Some(n) => n.scsi_bus().read_media(id, offset, buf),
+                None => Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such disk bus")),
+            },
+            None => Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such disk bus")),
+        }
+    }
+    fn disk_size(&self, bus: usize, id: u8) -> Option<u64> {
+        use crate::scsi_monitor::ScsiTargets;
+        let controllers = self.bus.scsi.lock().unwrap().clone();
+        match controllers.get(bus) {
+            Some(c) => c.bus().media_size(id),
+            None if bus == controllers.len() => self.bus.nvme.get().and_then(|n| n.scsi_bus().media_size(id)),
+            None => None,
+        }
+    }
     fn flush_disks(&self) -> std::io::Result<()> {
         self.bus.flush_disks()
     }

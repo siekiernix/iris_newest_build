@@ -44,6 +44,17 @@ pub trait ScsiTarget: Send {
     /// writes it carries out. A target that moves no blocks ignores them.
     fn set_activity(&mut self, _activity: Arc<DiskActivity>) {}
 
+    /// Read `buf.len()` bytes of the medium at byte `offset`, as the guest
+    /// would see them (a copy-on-write overlay or a CHD diff included), for a
+    /// front-end that browses a running machine's disk. Read-only; a target
+    /// with no block medium says `Unsupported`.
+    fn read_media(&mut self, _offset: u64, _buf: &mut [u8]) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "this target has no block medium"))
+    }
+
+    /// The medium's size in bytes, `None` with no block medium or no disc.
+    fn media_size(&self) -> Option<u64> { None }
+
     /// Whether READ(6) and WRITE(6) move packets, not blocks, so a
     /// controller must not read their count as a number of sectors.
     fn moves_packets(&self) -> bool { false }
@@ -190,6 +201,9 @@ impl DiskActivity {
     }
 }
 
+/// The most [`ScsiBus::read_media`] reads under one hold of the bus lock.
+pub const READ_MEDIA_CHUNK: usize = 64 * 1024;
+
 /// The targets on a bus by SCSI id, `None` where nothing answers.
 pub type Targets = Vec<Option<Box<dyn ScsiTarget>>>;
 
@@ -331,6 +345,30 @@ impl ScsiBus {
     /// stays at zero.
     pub fn activity(&self) -> Vec<DiskCounts> {
         self.activity.iter().map(|a| a.counts()).collect()
+    }
+
+    /// Read the medium of the target at `id` (see [`ScsiTarget::read_media`]).
+    /// The bus lock is held for at most [`READ_MEDIA_CHUNK`] bytes at a time,
+    /// so a large read never stalls the guest's own commands for long.
+    pub fn read_media(&self, id: u8, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        let mut done = 0usize;
+        while done < buf.len() {
+            let n = (buf.len() - done).min(READ_MEDIA_CHUNK);
+            let mut targets = self.targets.lock();
+            let target = targets
+                .get_mut(id as usize)
+                .and_then(|t| t.as_mut())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no target at SCSI id {id}")))?;
+            target.read_media(offset + done as u64, &mut buf[done..done + n])?;
+            drop(targets);
+            done += n;
+        }
+        Ok(())
+    }
+
+    /// The size of the medium of the target at `id`.
+    pub fn media_size(&self, id: u8) -> Option<u64> {
+        self.targets.lock().get(id as usize).and_then(|t| t.as_ref()).and_then(|t| t.media_size())
     }
 
     pub fn has_target(&self, id: u8) -> bool {
@@ -497,6 +535,25 @@ mod tests {
         let r = b.request(3, &inquiry()).expect("target answers").unwrap();
         assert_eq!(&r.data[8..16], b"TEST    ");
         assert!(b.request(2, &inquiry()).is_none(), "an empty id does not answer");
+    }
+
+    /// The read hook returns what the medium holds, across the bus's chunk
+    /// size, and refuses an empty id and a read past the end.
+    #[test]
+    fn read_media_reads_the_disk_in_pieces() {
+        let dir = TempPath::dir("scsibus");
+        let b = bus(8);
+        let p = dir.join("img");
+        let blocks = (READ_MEDIA_CHUNK * 3) / 512;
+        let data: Vec<u8> = (0..blocks * 512).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(&p, &data).unwrap();
+        attach(&b, 2, &p, false).unwrap();
+        assert_eq!(b.media_size(2), Some(data.len() as u64));
+        let mut buf = vec![0u8; READ_MEDIA_CHUNK * 2 + 100];
+        b.read_media(2, 300, &mut buf).unwrap();
+        assert_eq!(buf, data[300..300 + buf.len()]);
+        assert!(b.read_media(5, 0, &mut [0u8; 4]).is_err(), "nothing at id 5");
+        assert!(b.read_media(2, data.len() as u64 - 2, &mut [0u8; 4]).is_err(), "past the end");
     }
 
     /// A controller's register path can look at the bus while a command

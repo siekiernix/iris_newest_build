@@ -1287,6 +1287,21 @@ impl ScsiTarget for ScsiDevice {
         self.activity = Some(activity);
     }
 
+    fn read_media(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        if !self.media.present() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "no medium"));
+        }
+        let node = self.media.node_mut();
+        if offset.checked_add(buf.len() as u64).map_or(true, |end| end > node.size()) {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "past the end of the medium"));
+        }
+        node.read(offset, buf)
+    }
+
+    fn media_size(&self) -> Option<u64> {
+        self.media.present().then(|| self.media.node().size())
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         if self.is_cdrom() {
             return Ok(());
