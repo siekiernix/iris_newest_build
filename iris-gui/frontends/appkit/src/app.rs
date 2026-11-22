@@ -128,7 +128,10 @@ fn start(mtm: MainThreadMarker) {
     // (`IRIS_APPKIT_SCRIPT_DELAY`, default 3). "select:NAME" selects a machine,
     // "page:ID" shows a settings section, "set:ID=VALUE" reports a settings control,
     // "open:N" and "pick:N,M" open and select rows of the disk browser,
-    // "dump:devices" prints the Devices menu.
+    // "type:TEXT" fills the browser's editor (\n for a newline),
+    // "dump:devices" prints the Devices menu, "dump:browser" the browser's
+    // folder, "drop:PATH" drops a host file on it. IRIS_APPKIT_ANSWERS (see
+    // effects.rs) answers the prompts these raise.
     if let Ok(script) = std::env::var("IRIS_APPKIT_SCRIPT") {
         SCRIPT.with(|q| q.borrow_mut().extend(script.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty())));
         schedule_script_step();
@@ -178,6 +181,19 @@ pub fn script_step() {
         if let Some(value) = value {
             setting(id.to_string(), value);
         }
+    } else if let Some(path) = step.strip_prefix("drop:") {
+        browser_drop(vec![std::path::PathBuf::from(path)], None);
+    } else if let Some(text) = step.strip_prefix("type:") {
+        with(|s| s.browser.as_ref().map(|w| w.set_editor_text(&text.replace("\\n", "\n"))));
+    } else if step == "dump:browser" {
+        with(|s| {
+            if let Some(b) = s.app.browser() {
+                eprintln!("browser path: {:?} read-only: {:?}", b.path(), b.read_only_reason());
+                for r in b.rows() {
+                    eprintln!("  {} {} {} {}:{}", r.mode, r.size, r.name, r.owner, r.group);
+                }
+            }
+        });
     } else if step == "dump:devices" {
         crate::menu::dump_devices(mtm());
     } else if let Some(row) = step.strip_prefix("open:").and_then(|r| r.parse().ok()) {
@@ -545,6 +561,11 @@ pub fn browser_select(rows: Vec<usize>) {
     dispatch(AppAction::Browser(iris_gui_core::controller::disk_browser::BrowserAction::Select(rows)));
 }
 
+/// Host files dropped on the browser's table (`into`: a folder row).
+pub fn browser_drop(paths: Vec<std::path::PathBuf>, into: Option<usize>) {
+    dispatch(AppAction::Browser(iris_gui_core::controller::disk_browser::BrowserAction::Drop { paths, into }));
+}
+
 /// A row of the browser's table was double-clicked.
 pub fn browser_activate(row: usize) {
     dispatch(AppAction::Browser(iris_gui_core::controller::disk_browser::BrowserAction::Activate(row)));
@@ -648,11 +669,12 @@ fn shell_command(c: ShellCommand) {
         }
         ShellCommand::CloseWindow => {
             // The front window: the settings window as well as the main one.
-            match NSApplication::sharedApplication(mtm()).keyWindow() {
-                Some(w) => w.performClose(None),
-                None => {
-                    with(|s| s.win.window.performClose(None));
-                }
+            // With no key window (the app in the background), the frontmost
+            // visible one; never the main window by default.
+            let app = NSApplication::sharedApplication(mtm());
+            let front = app.keyWindow().or_else(|| app.orderedWindows().iter().find(|w| w.isVisible()));
+            if let Some(w) = front {
+                w.performClose(None);
             }
         }
         ShellCommand::About => show_help(iris_gui_core::controller::help::HelpPage::About),

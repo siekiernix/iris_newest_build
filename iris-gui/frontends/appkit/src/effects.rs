@@ -24,9 +24,55 @@ pub struct Outcome {
     pub open_settings: Option<&'static str>,
 }
 
+thread_local! {
+    /// Answers for the next prompts, from `IRIS_APPKIT_ANSWERS` (a test hook
+    /// beside `IRIS_APPKIT_SCRIPT`): `yes`, `no`, `text:VALUE`, `cancel`,
+    /// `choose:N`, `pick:PATH`, separated by `;`. Prompts past the list show
+    /// their real panels.
+    static ANSWERS: std::cell::RefCell<Option<std::collections::VecDeque<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn scripted() -> Option<String> {
+    ANSWERS.with(|a| {
+        let mut a = a.borrow_mut();
+        let q = a.get_or_insert_with(|| {
+            std::env::var("IRIS_APPKIT_ANSWERS")
+                .map(|s| s.split(';').map(|x| x.to_string()).filter(|x| !x.is_empty()).collect())
+                .unwrap_or_default()
+        });
+        let next = q.pop_front();
+        if let Some(n) = &next {
+            eprintln!("iris-appkit answer: {n}");
+        }
+        next
+    })
+}
+
+/// A prompt's scripted answer, when the hook has one.
+fn scripted_answer(e: &Effect) -> Option<Answer> {
+    let peek_ok = matches!(e, Effect::Confirm(_) | Effect::AskText(_) | Effect::Choose(_) | Effect::PickFile(_) | Effect::PickFolder(_));
+    if !peek_ok {
+        return None;
+    }
+    let a = scripted()?;
+    Some(match e {
+        Effect::Confirm(s) => Answer::Confirmed { purpose: s.purpose, yes: a == "yes" },
+        Effect::AskText(s) => Answer::Text { purpose: s.purpose, text: a.strip_prefix("text:").map(str::to_string) },
+        Effect::Choose(s) => Answer::Chose { purpose: s.purpose, index: a.strip_prefix("choose:").and_then(|n| n.parse().ok()).unwrap_or(s.dismiss) },
+        Effect::PickFile(s) | Effect::PickFolder(s) => {
+            Answer::Picked { purpose: s.purpose, paths: a.strip_prefix("pick:").map(|p| vec![PathBuf::from(p)]).unwrap_or_default() }
+        }
+        _ => return None,
+    })
+}
+
 pub fn run(mtm: MainThreadMarker, effects: Vec<Effect>) -> Outcome {
     let mut out = Outcome::default();
     for e in effects {
+        if let Some(a) = scripted_answer(&e) {
+            out.answers.push(a);
+            continue;
+        }
         match e {
             Effect::PickFile(spec) => out.answers.push(Answer::Picked { purpose: spec.purpose, paths: pick(mtm, &spec, false) }),
             Effect::PickFolder(spec) => out.answers.push(Answer::Picked { purpose: spec.purpose, paths: pick(mtm, &spec, true) }),

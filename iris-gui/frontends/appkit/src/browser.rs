@@ -15,7 +15,8 @@ use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThr
 use objc2_app_kit::{
     NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSControlStateValueOn, NSControlTextEditingDelegate, NSFont,
     NSImageCell, NSLayoutAttribute, NSProgressIndicator, NSProgressIndicatorStyle, NSScrollView, NSStackView,
-    NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTextField, NSTextView, NSView,
+    NSDragOperation, NSDraggingInfo, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
+    NSTableViewDropOperation, NSTextField, NSTextView, NSView,
     NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{NSIndexSet, NSMutableIndexSet, NSNotification, NSPoint, NSRect, NSSize, NSString};
@@ -82,6 +83,47 @@ define_class!(
             // AppKit retains what it keeps; hand it an autoreleased object.
             obj.map_or(std::ptr::null_mut(), Retained::autorelease_return)
         }
+
+        /// Host files dragged over the table: copy them in. Over a folder
+        /// row they go into that folder; elsewhere into the open folder.
+        #[unsafe(method(tableView:validateDrop:proposedRow:proposedDropOperation:))]
+        fn validate_drop(
+            &self,
+            table: &NSTableView,
+            info: &ProtocolObject<dyn NSDraggingInfo>,
+            row: isize,
+            op: NSTableViewDropOperation,
+        ) -> NSDragOperation {
+            if dropped_paths(info).is_empty() {
+                return NSDragOperation::None;
+            }
+            let on_folder = op == NSTableViewDropOperation::On
+                && self.ivars().rows.borrow().get(row as usize).is_some_and(|r| r.is_dir);
+            if !on_folder {
+                // Retarget to the whole table: the open folder.
+                table.setDropRow_dropOperation(-1, NSTableViewDropOperation::On);
+            }
+            NSDragOperation::Copy
+        }
+
+        #[unsafe(method(tableView:acceptDrop:row:dropOperation:))]
+        fn accept_drop(
+            &self,
+            _table: &NSTableView,
+            info: &ProtocolObject<dyn NSDraggingInfo>,
+            row: isize,
+            op: NSTableViewDropOperation,
+        ) -> objc2::runtime::Bool {
+            let paths = dropped_paths(info);
+            if paths.is_empty() {
+                return objc2::runtime::Bool::NO;
+            }
+            let into = (row >= 0 && op == NSTableViewDropOperation::On
+                && self.ivars().rows.borrow().get(row as usize).is_some_and(|r| r.is_dir))
+                .then_some(row as usize);
+            crate::app::later(Box::new(move || crate::app::browser_drop(paths, into)));
+            objc2::runtime::Bool::YES
+        }
     }
 
     unsafe impl NSControlTextEditingDelegate for TableData {}
@@ -129,6 +171,20 @@ define_class!(
         }
     }
 );
+
+/// The host files on a drag's pasteboard.
+fn dropped_paths(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<std::path::PathBuf> {
+    let pb = info.draggingPasteboard();
+    let Some(items) = pb.pasteboardItems() else { return Vec::new() };
+    items
+        .iter()
+        // SAFETY: AppKit's own pasteboard type constant.
+        .filter_map(|it| it.stringForType(unsafe { objc2_app_kit::NSPasteboardTypeFileURL }))
+        .filter_map(|s| objc2_foundation::NSURL::URLWithString(&s))
+        .filter_map(|u| u.path())
+        .map(|p| std::path::PathBuf::from(p.to_string()))
+        .collect()
+}
 
 fn indices(set: &NSIndexSet) -> Vec<usize> {
     let mut out = Vec::new();
@@ -281,6 +337,8 @@ impl BrowserWindow {
             table.addTableColumn(&c);
         }
         table.setAllowsMultipleSelection(true);
+        // SAFETY: AppKit's own pasteboard type constant.
+        table.registerForDraggedTypes(&objc2_foundation::NSArray::from_slice(&[unsafe { objc2_app_kit::NSPasteboardTypeFileURL }]));
         table.setUsesAlternatingRowBackgroundColors(true);
         set_id(&table, ids::TABLE);
         let data: Retained<TableData> = {
@@ -359,6 +417,13 @@ impl BrowserWindow {
             editor: None,
             last_parts: None,
             last_path: Vec::new(),
+        }
+    }
+
+    /// Replace the editor's text, as typing would (the script hook).
+    pub fn set_editor_text(&self, text: &str) {
+        if let Some(e) = &self.editor {
+            e.text.setString(&ns(text));
         }
     }
 
