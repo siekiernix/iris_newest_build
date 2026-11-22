@@ -21,6 +21,8 @@
 
 pub mod app;
 pub mod bench;
+pub mod camera;
+pub mod debug;
 pub mod display;
 pub mod icons;
 pub mod ids;

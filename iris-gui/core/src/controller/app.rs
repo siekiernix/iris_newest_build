@@ -64,6 +64,8 @@ pub enum AppAction {
     Flush,
     /// The user asked to quit (window close, menu, Cmd+Q).
     RequestQuit,
+    /// The host-camera test window.
+    Camera(super::camera::CameraAction),
     /// Networking help and packet-capture permission.
     Network(super::network::NetworkAction),
     /// The serial console window.
@@ -121,6 +123,7 @@ pub struct AppController {
     settings: super::settings::SettingsController,
     serial: super::serial::SerialConsoleController,
     pub(crate) network: super::network::NetworkController,
+    camera: super::camera::CameraTestController,
     notify: Arc<dyn Notify>,
     /// Problems found the last time the library was checked, by machine.
     problems: std::collections::BTreeMap<String, String>,
@@ -172,6 +175,7 @@ impl AppController {
             settings: Default::default(),
             serial: Default::default(),
             network: super::network::NetworkController::new(),
+            camera: Default::default(),
             notify,
             problems: Default::default(),
             pending_machine: None,
@@ -229,6 +233,10 @@ impl AppController {
 
     pub fn session_mut(&mut self) -> &mut SessionController {
         &mut self.session
+    }
+
+    pub fn camera(&self) -> &super::camera::CameraTestController {
+        &self.camera
     }
 
     pub fn serial(&self) -> &super::serial::SerialConsoleController {
@@ -771,6 +779,7 @@ impl Controller for AppController {
             }
             AppAction::RequestQuit => self.request_quit(&mut fx),
             AppAction::Session(a) => self.session_apply(a, &mut fx),
+            AppAction::Camera(a) => self.camera.apply(a, &self.cfg),
             AppAction::Network(a) => self.network_apply(a, &mut fx),
             AppAction::Serial(a) => self.serial.apply(a, &self.cfg, self.notify.clone()),
             AppAction::Settings(a) => {

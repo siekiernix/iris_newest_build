@@ -6,6 +6,7 @@
 #[macro_use]
 pub mod i18n;
 
+pub mod camera_test;
 pub mod capture_access;
 pub mod framebuffer;
 pub mod handle;

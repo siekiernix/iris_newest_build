@@ -6,7 +6,6 @@ extern crate iris_gui_core;
 mod i18n;
 mod bench_ui;
 mod filedialog;
-mod camera_test;
 mod config_ui;
 mod extra_ui;
 mod dialogs;
@@ -307,9 +306,6 @@ struct App {
     /// Per-frame state for the egui→PS2 input pump (modifier diff,
     /// mouse button mask, last cursor position).
     input_state: input::InputState,
-    /// Active "Test Camera" preview (None when the window is closed). Opening it
-    /// starts host-camera capture; dropping it releases the device.
-    camera_test: Option<camera_test::CameraTest>,
     /// egui texture for the camera-test preview + the last frame seq uploaded.
     camera_test_tex: Option<egui::TextureHandle>,
     camera_test_seq: u64,
@@ -400,7 +396,6 @@ impl App {
             fb_scale: 0.0,
             pending_fb_snap: false,
             input_state: input::InputState::default(),
-            camera_test: None,
             camera_test_tex: None,
             camera_test_seq: 0,
             serial_input: String::new(),
@@ -1126,19 +1121,9 @@ impl App {
                 });
                 ui.separator();
                 ui.label(RichText::new(t!("menu-help-build-features")).strong());
-                use iris::build_features as bf;
-                // rex-jit is a compile-time feature, but the sandbox (App
-                // Store) build forces interpreter-only at runtime via IRIS_NO_JIT
-                // (Cranelift's non-MAP_JIT pages get killed under the sandbox).
-                // Report the runtime reality so a compiled-in "on" doesn't read
-                // as "the JIT is running" when it can't be.
-                let jit_off = std::env::var_os("IRIS_NO_JIT").is_some();
-                let jit_state = |feat: bool| if !feat { t!("menu-help-feature-off") } else if jit_off { t!("menu-help-feature-off-sandbox") } else { t!("menu-help-feature-on") };
-                ui.label(t!("menu-help-feature", name = "rex-jit", state = jit_state(bf::REX_JIT)));
-                ui.label(t!("menu-help-feature", name = "gr2-jit", state = jit_state(bf::GR2_JIT)));
-                ui.label(t!("menu-help-feature", name = "gr4-jit", state = jit_state(bf::GR4_JIT)));
-                ui.label(t!("menu-help-feature", name = "jitv2", state = jit_state(bf::JITV2)));
-                ui.label(t!("menu-help-feature", name = "lightning", state = if bf::LIGHTNING { t!("menu-help-feature-on-no-debug") } else { t!("menu-help-feature-off") }));
+                for f in iris_gui_core::controller::debug::build_features() {
+                    ui.label(t!("menu-help-feature", name = f.name, state = f.state));
+                }
             });
         });
     }
@@ -1910,26 +1895,19 @@ impl App {
     /// Open (or restart) the live host-camera preview using the current
     /// `[vino]` standard and camera index. Releases any previous test first.
     fn open_camera_test(&mut self) {
-        use iris::video_source::VideoStandard;
-        let standard = match self.app.config().vino.standard {
-            iris::config::VinoStandard::Ntsc => VideoStandard::Ntsc,
-            iris::config::VinoStandard::Pal  => VideoStandard::Pal,
-        };
-        // Drop the previous instance first so the camera is fully released
-        // before re-opening (its Drop joins the capture thread).
-        self.camera_test = None;
         self.camera_test_tex = None;
         self.camera_test_seq = 0;
-        self.camera_test = Some(camera_test::CameraTest::start(standard, self.app.config().vino.camera_index));
+        self.run_app(AppAction::Camera(iris_gui_core::controller::camera::CameraAction::Open));
     }
 
     /// Draw the live host-camera preview window (no-op when closed). Closing it
     /// (or pressing Stop) drops the `CameraTest`, releasing the camera.
     fn camera_test_window(&mut self, ctx: &egui::Context) {
-        let Some(test) = &self.camera_test else { return };
+        let Some((status, failed)) = self.app.camera().status() else { return };
+        let error = failed.then(|| status.clone());
 
         // Pull the latest frame and upload it to the preview texture.
-        if let Some((w, h, rgba)) = test.take_new_frame(&mut self.camera_test_seq) {
+        if let Some((w, h, rgba)) = self.app.camera().take_new_frame(&mut self.camera_test_seq) {
             let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
             match &mut self.camera_test_tex {
                 Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
@@ -1939,9 +1917,6 @@ impl App {
                 }
             }
         }
-        let status = test.status();
-        let error = test.error();
-
         let mut open = true;
         let mut close_now = false;
         egui::Window::new(t!("window-camera-title"))
@@ -1974,8 +1949,8 @@ impl App {
             });
 
         if !open || close_now {
-            // Drop releases the camera (CameraTest::Drop joins the worker).
-            self.camera_test = None;
+            // Closing releases the camera.
+            self.run_app(AppAction::Camera(iris_gui_core::controller::camera::CameraAction::Close));
             self.camera_test_tex = None;
             self.camera_test_seq = 0;
         } else {

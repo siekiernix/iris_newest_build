@@ -453,7 +453,7 @@ fn show_general(ui: &mut Ui, cfg: &mut MachineConfig, mem_ctx: MemoryUiContext) 
 
 /// The monitor console's loopback port, default filled in.
 pub fn monitor_port(cfg: &MachineConfig) -> u16 {
-    cfg.monitor_port.unwrap_or(iris::monitor::DEFAULT_PORT)
+    iris_gui_core::controller::debug::monitor_port(cfg)
 }
 
 /// `monitor_port`, `serial_port_a`, `serial_port_b`: the loopback TCP ports of
