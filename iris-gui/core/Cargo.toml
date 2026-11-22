@@ -1,0 +1,18 @@
+[package]
+name = "iris-gui-core"
+version = "0.1.0"
+edition = "2021"
+description = "IRIS front-end core: the model and controllers every GUI shell shares (no toolkit)"
+license = "BSD-3-Clause"
+publish = false
+
+# The toolkit-free half of the GUI (clanker/plans/iris-newgui-plan.md). The egui
+# shell (iris-gui) and the native shells (frontends/*) depend on this crate and
+# reach the emulator only through `controller`. Nothing here may name a UI
+# toolkit; scripts/check-boundaries.sh enforces that.
+
+[dependencies]
+# Same features as iris-gui asks for, so building this crate alone does not
+# compile a second copy of the emulator with a different feature set.
+iris = { path = "../..", features = ["gpujit"] }
+log = "0.4"

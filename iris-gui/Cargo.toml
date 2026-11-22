@@ -94,6 +94,8 @@ wgpu = ["iris/wgpu"]
 # unconditional in the core and selected at runtime; Ultra64 requires an
 # external gopher64 bridge peer.
 iris = { path = "..", features = ["gpujit"] }
+# The toolkit-free model and controllers every shell shares.
+iris-gui-core = { path = "core" }
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = "0.36"
 crossbeam-channel = "0.5"
