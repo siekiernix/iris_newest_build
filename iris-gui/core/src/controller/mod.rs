@@ -28,6 +28,7 @@ pub mod labels;
 mod power;
 pub mod profile;
 pub mod session;
+pub mod settings;
 
 pub use crate::model::job::{NoWake, Notify, Progress, Snapshot as JobSnapshot, Status as JobStatus, Unit};
 

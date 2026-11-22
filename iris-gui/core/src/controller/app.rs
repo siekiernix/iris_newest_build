@@ -64,6 +64,8 @@ pub enum AppAction {
     Flush,
     /// The user asked to quit (window close, menu, Cmd+Q).
     RequestQuit,
+    /// A settings edit on the selected machine.
+    Settings(super::settings::SettingsAction),
     /// A display action: capture, keys and pointer, full screen, scaling.
     Display(super::display::DisplayAction),
     /// A session action: power, saved states, discs, disks.
@@ -112,6 +114,7 @@ pub struct AppController {
     dirty_since: Option<Instant>,
     session: SessionController,
     display: super::display::DisplayController,
+    settings: super::settings::SettingsController,
     notify: Arc<dyn Notify>,
     /// Problems found the last time the library was checked, by machine.
     problems: std::collections::BTreeMap<String, String>,
@@ -160,6 +163,7 @@ impl AppController {
             dirty_since: None,
             session: SessionController::spawn(notify.clone()),
             display: Default::default(),
+            settings: Default::default(),
             notify,
             problems: Default::default(),
             pending_machine: None,
@@ -217,6 +221,11 @@ impl AppController {
 
     pub fn session_mut(&mut self) -> &mut SessionController {
         &mut self.session
+    }
+
+    /// The selected machine's settings, as sections of fields.
+    pub fn settings_sections(&self) -> Vec<super::settings::Section> {
+        self.settings.sections(&self.cfg, self.session.is_running())
     }
 
     pub fn display(&self) -> &super::display::DisplayController {
@@ -750,6 +759,28 @@ impl Controller for AppController {
             }
             AppAction::RequestQuit => self.request_quit(&mut fx),
             AppAction::Session(a) => self.session_apply(a, &mut fx),
+            AppAction::Settings(a) => {
+                use super::settings::{SettingsAction, SettingsController};
+                let live = match &a {
+                    SettingsAction::Set { field, .. } => SettingsController::live_change(field),
+                    SettingsAction::Forward(_) => true,
+                    _ => false,
+                };
+                let dir = self.machine_dir();
+                let (changed, more) = self.settings.apply(a, &mut self.cfg, dir);
+                fx.extend(more);
+                if changed {
+                    fx.extend(self.mark_dirty());
+                    if live && self.session.is_running() {
+                        use crate::model::handle::Cmd;
+                        if let Some(subnet) = self.cfg.nat_subnet.clone().filter(|s| iris::config::parse_nat_subnet(s).is_ok()) {
+                            self.session.send(Cmd::SetNatSubnet(subnet));
+                        }
+                        self.session.send(Cmd::SetPortForwards(self.cfg.port_forward.clone()));
+                        self.session.send(Cmd::SetPcapInterface(self.cfg.network.pcap_interface.clone()));
+                    }
+                }
+            }
             AppAction::Display(a) => {
                 let ps2 = self.session.ps2();
                 let guest = ps2.as_deref().map(|p| p as &dyn super::display::GuestInput);
@@ -757,7 +788,9 @@ impl Controller for AppController {
                 fx.extend(self.display.apply(a, guest, &mut self.prefs, per_line));
             }
             AppAction::Answer(a) => {
-                if a.purpose().starts_with("session.") {
+                if a.purpose().starts_with("settings.") {
+                    fx.extend(self.apply(AppAction::Settings(super::settings::SettingsAction::Answer(a))));
+                } else if a.purpose().starts_with("session.") {
                     self.session_apply(super::session::SessionAction::Answer(a), &mut fx);
                 } else {
                     self.answer(a, &mut fx);
