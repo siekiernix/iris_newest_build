@@ -125,7 +125,87 @@ fn session_of(id: &str) -> Option<SessionAction> {
     })
 }
 
+/// A per-item command id's session action (discs and copy-on-write).
+fn item_session(id: &str) -> Option<SessionAction> {
+    use super::ids::item;
+    let key = |prefix: &str| id.strip_prefix(prefix).and_then(|k| k.parse::<u8>().ok());
+    if let Some(key) = key(item::INSERT_DISC) {
+        return Some(SessionAction::InsertDisc { key });
+    }
+    if let Some(key) = key(item::EJECT_DISC) {
+        return Some(SessionAction::EjectDisc { key });
+    }
+    if let Some(key) = key(item::MOUNT_DISC) {
+        return Some(SessionAction::RemountDisc { key });
+    }
+    if let Some(key) = key(item::COMMIT_COW) {
+        return Some(SessionAction::ApplyChanges { key });
+    }
+    key(item::DISCARD_COW).map(|key| SessionAction::RollBack { key })
+}
+
+/// One entry of a shell-drawn menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuEntry {
+    /// The command id to run.
+    pub id: String,
+    pub label: String,
+    pub tooltip: Option<String>,
+    pub enabled: Enabled,
+}
+
+/// A titled group of entries (a submenu, or a section with a heading).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuGroup {
+    pub title: String,
+    pub icon: Icon,
+    pub entries: Vec<MenuEntry>,
+}
+
 impl AppController {
+    /// The Disks menu: one group per disk and CD-ROM of the selected
+    /// machine, each with what can be done to it now.
+    pub fn disk_menu(&self) -> Vec<MenuGroup> {
+        use super::ids::item;
+        let cfg = self.config();
+        let mut keys: Vec<u8> = cfg.scsi.keys().copied().collect();
+        keys.sort();
+        let entry = |id: String, label: String, tooltip: Option<String>| {
+            let enabled = self.command_enabled(&id);
+            MenuEntry { id, label, tooltip, enabled }
+        };
+        let overlays = self.overlays();
+        let mut out = Vec::new();
+        for key in keys {
+            let d = &cfg.scsi[&key];
+            let name = crate::model::hardware::scsi_name(cfg, key);
+            let file = std::path::Path::new(&d.path).file_name().map(|f| f.to_string_lossy().into_owned());
+            if d.is_cdrom() {
+                let title = match &file {
+                    Some(f) => t!("scsi-slot-cdrom", id = name.as_str(), name = f.as_str()),
+                    None => t!("scsi-slot-cdrom-empty", id = name.as_str()),
+                };
+                let insert = if file.is_some() { t!("scsi-change-disc") } else { t!("scsi-insert-disc") };
+                let mut entries = vec![entry(item::id(item::INSERT_DISC, key), insert, None)];
+                if file.is_some() {
+                    entries.push(entry(item::id(item::EJECT_DISC, key), t!("scsi-eject"), None));
+                    entries.push(entry(item::id(item::MOUNT_DISC, key), t!("scsi-mount-in-irix"), Some(t!("scsi-mount-in-irix-tip"))));
+                    entries.push(entry(item::id(item::BROWSE_DISK, key), t!("ov-browse"), None));
+                }
+                out.push(MenuGroup { title, icon: Icon::CdRom, entries });
+            } else if d.kind() == iris::config::ScsiKind::Disk && !d.path.trim().is_empty() {
+                let title = t!("scsi-slot-hdd", id = name.as_str(), name = file.unwrap_or_default());
+                let mut entries = vec![entry(item::id(item::BROWSE_DISK, key), t!("ov-browse"), None)];
+                if overlays.iter().any(|(k, _, _)| *k == key) {
+                    entries.push(entry(item::id(item::COMMIT_COW, key), t!("menu-cow-commit"), Some(t!("menu-cow-commit-tip"))));
+                    entries.push(entry(item::id(item::DISCARD_COW, key), t!("menu-cow-discard"), Some(t!("menu-cow-discard-tip"))));
+                }
+                out.push(MenuGroup { title, icon: Icon::Disk, entries });
+            }
+        }
+        out
+    }
+
     /// Whether the command `id` can run now, and if not why.
     pub fn command_enabled(&self, id: &str) -> Enabled {
         use super::ids::item;
@@ -135,8 +215,8 @@ impl AppController {
         if id.starts_with(item::BROWSE_DISK) {
             return self.command_enabled(tb::BROWSE_FILES);
         }
-        if id.starts_with(item::INSERT_DISC) {
-            return self.command_enabled(tb::INSERT_DISC);
+        if let Some(a) = item_session(id) {
+            return self.session_enabled(&a);
         }
         if let Some(name) = id.strip_prefix(item::RESTORE_STATE) {
             return self.session_enabled(&SessionAction::RestoreState(name.into()));
@@ -231,8 +311,8 @@ impl AppController {
             r.effects = self.apply(AppAction::OpenBrowser { key });
             return r;
         }
-        if let Some(key) = id.strip_prefix(item::INSERT_DISC).and_then(|k| k.parse().ok()) {
-            r.effects = self.apply(AppAction::Session(SessionAction::InsertDisc { key }));
+        if let Some(a) = item_session(id) {
+            r.effects = self.apply(AppAction::Session(a));
             return r;
         }
         let action = match id {

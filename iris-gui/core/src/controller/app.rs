@@ -1151,6 +1151,31 @@ mod tests {
     }
 
     #[test]
+    fn the_disk_menu_offers_what_each_device_can_do() {
+        let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
+        let root = TempRoot::new("diskmenu");
+        let mut app = app_in(&root, &["alpha"]);
+        let disk = root.0.join("disk.img");
+        std::fs::write(&disk, [0u8; 512]).unwrap();
+        let iso = root.0.join("irix.iso");
+        std::fs::write(&iso, [0u8; 2048]).unwrap();
+        app.config_mut().scsi.clear();
+        app.config_mut().scsi.insert(1, iris::config::ScsiDeviceConfig { path: disk.to_string_lossy().into(), ..Default::default() });
+        app.config_mut().scsi.insert(4, iris::config::ScsiDeviceConfig { path: iso.to_string_lossy().into(), cdrom: true, ..Default::default() });
+        app.apply(AppAction::ConfigEdited);
+        let menu = app.disk_menu();
+        assert_eq!(menu.len(), 2);
+        let ids: Vec<&str> = menu[1].entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["disc.insert:4", "disc.eject:4", "disc.mount:4", "browse:4"]);
+        // Eject needs a running machine; the controller says why.
+        assert!(matches!(menu[1].entries[1].enabled, Enabled::No(_)));
+        assert_eq!(menu[0].entries[0].id, "browse:1");
+        // No overlay file yet: no copy-on-write entries.
+        assert_eq!(menu[0].entries.len(), 1);
+        app.shutdown();
+    }
+
+    #[test]
     fn quitting_with_nothing_pending_saves_and_quits() {
         let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
         let root = TempRoot::new("quit");

@@ -126,7 +126,8 @@ fn start(mtm: MainThreadMarker) {
     // A test script: command ids, separated by `;`, one every few seconds
     // (`IRIS_APPKIT_SCRIPT_DELAY`, default 3). "select:NAME" selects a machine,
     // "page:ID" shows a settings section, "set:ID=VALUE" reports a settings control,
-    // "open:N" and "pick:N,M" open and select rows of the disk browser.
+    // "open:N" and "pick:N,M" open and select rows of the disk browser,
+    // "dump:devices" prints the Devices menu.
     if let Ok(script) = std::env::var("IRIS_APPKIT_SCRIPT") {
         SCRIPT.with(|q| q.borrow_mut().extend(script.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty())));
         schedule_script_step();
@@ -176,6 +177,8 @@ pub fn script_step() {
         if let Some(value) = value {
             setting(id.to_string(), value);
         }
+    } else if step == "dump:devices" {
+        crate::menu::dump_devices(mtm());
     } else if let Some(row) = step.strip_prefix("open:").and_then(|r| r.parse().ok()) {
         browser_activate(row);
     } else if let Some(rows) = step.strip_prefix("pick:") {
@@ -599,6 +602,11 @@ pub fn shortcut(key: iris_gui_core::controller::keys::Key, mods: iris_gui_core::
 /// Whether a menu or toolbar item with this id is enabled.
 pub fn enabled(id: &str) -> bool {
     with(|s| s.app.command_enabled(id)).map_or(true, |e| e == Enabled::Yes)
+}
+
+/// The Devices menu's groups, or `None` while the shell is busy.
+pub fn disk_menu() -> Option<Vec<iris_gui_core::controller::commands::MenuGroup>> {
+    with(|s| s.app.disk_menu())
 }
 
 pub fn select_machine(name: String) {

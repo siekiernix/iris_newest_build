@@ -65,6 +65,12 @@ pub mod item {
     pub const BROWSE_DISK: &str = "browse:";
     /// Followed by the CD-ROM's `[scsi.KEY]` key.
     pub const INSERT_DISC: &str = "disc.insert:";
+    /// Each followed by the CD-ROM's key.
+    pub const EJECT_DISC: &str = "disc.eject:";
+    pub const MOUNT_DISC: &str = "disc.mount:";
+    /// Each followed by the disk's key: merge or discard its copy-on-write changes.
+    pub const COMMIT_COW: &str = "cow.commit:";
+    pub const DISCARD_COW: &str = "cow.discard:";
 
     pub fn id(prefix: &str, item: impl std::fmt::Display) -> String {
         format!("{prefix}{item}")

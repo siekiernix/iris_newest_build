@@ -5,8 +5,9 @@
 
 use objc2::rc::Retained;
 use objc2::runtime::Sel;
-use objc2::{sel, MainThreadMarker};
-use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem, NSUserInterfaceItemIdentification};
+use objc2::runtime::{NSObject, NSObjectProtocol};
+use objc2::{define_class, sel, MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuDelegate, NSMenuItem, NSUserInterfaceItemIdentification};
 use iris_gui_core::controller::commands::{id_of, menu as m};
 use iris_gui_core::controller::ids::toolbar as tb;
 use iris_gui_core::controller::keys::{Command, Key, KeyMap};
@@ -159,18 +160,12 @@ pub fn build(mtm: MainThreadMarker) {
             o(t!("tb-settings"), tb::MACHINE_SETTINGS),
         ],
     );
-    submenu(
-        mtm,
-        &bar,
-        &t!("mb-devices"),
-        vec![
-            o(t!("tb-insert-disc"), tb::INSERT_DISC),
-            o(t!("tb-browse-files"), tb::BROWSE_FILES),
-            None,
-            o(t!("mb-sync-disks"), m::SYNC_DISKS),
-            o(t!("mb-check-network"), m::CHECK_NETWORK),
-        ],
-    );
+    // Devices: one submenu per disk and CD-ROM, rebuilt each time it opens.
+    let devices = submenu(mtm, &bar, &t!("mb-devices"), Vec::new());
+    let delegate = DevicesDelegate::new(mtm);
+    devices.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*delegate)));
+    DEVICES.with(|d| *d.borrow_mut() = Some(delegate));
+    fill_devices(mtm, &devices, &[]);
     submenu(
         mtm,
         &bar,
@@ -197,6 +192,72 @@ pub fn build(mtm: MainThreadMarker) {
     let app = NSApplication::sharedApplication(mtm);
     app.setMainMenu(Some(&bar));
     app.setWindowsMenu(Some(&window));
+}
+
+thread_local! {
+    static DEVICES: std::cell::RefCell<Option<Retained<DevicesDelegate>>> = const { std::cell::RefCell::new(None) };
+}
+
+define_class!(
+    /// Rebuilds the Devices menu from `AppController::disk_menu` as it opens.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "IRISDevicesMenuDelegate"]
+    pub struct DevicesDelegate;
+
+    unsafe impl NSObjectProtocol for DevicesDelegate {}
+
+    unsafe impl NSMenuDelegate for DevicesDelegate {
+        #[unsafe(method(menuNeedsUpdate:))]
+        fn needs_update(&self, menu: &NSMenu) {
+            if let Some(groups) = crate::app::disk_menu() {
+                fill_devices(self.mtm(), menu, &groups);
+            }
+        }
+    }
+);
+
+impl DevicesDelegate {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(());
+        // SAFETY: NSObject's plain init.
+        unsafe { objc2::msg_send![super(this), init] }
+    }
+}
+
+/// The Devices menu: the machine's disks and CD-ROMs, then the commands for all.
+fn fill_devices(mtm: MainThreadMarker, menu: &NSMenu, groups: &[iris_gui_core::controller::commands::MenuGroup]) {
+    let keys = KeyMap::default();
+    menu.removeAllItems();
+    for g in groups {
+        let sub = NSMenu::initWithTitle(mtm.alloc(), &ns(&g.title));
+        for e in &g.entries {
+            let it = ours(mtm, &keys, &e.label, &e.id);
+            if let Some(tip) = &e.tooltip {
+                it.setToolTip(Some(&ns(tip)));
+            }
+            sub.addItem(&it);
+        }
+        let host = system(mtm, &g.title, sel!(act:), "");
+        // SAFETY: a parent item; the submenu holds the actions.
+        unsafe { host.setAction(None) };
+        if let Some(img) = crate::glyphs::icon(g.icon, &g.title) {
+            host.setImage(Some(&img));
+        }
+        host.setSubmenu(Some(&sub));
+        menu.addItem(&host);
+    }
+    if !groups.is_empty() {
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+    }
+    for (title, id) in [
+        (t!("tb-insert-disc"), tb::INSERT_DISC),
+        (t!("tb-browse-files"), tb::BROWSE_FILES),
+        (t!("mb-sync-disks"), m::SYNC_DISKS),
+        (t!("mb-check-network"), m::CHECK_NETWORK),
+    ] {
+        menu.addItem(&ours(mtm, &keys, &title, id));
+    }
 }
 
 /// The saved-states menu the toolbar's Saved States opens: each state with
@@ -230,4 +291,30 @@ pub fn saved_states(mtm: MainThreadMarker, states: &[iris_gui_core::controller::
     }
     let at = objc2_app_kit::NSEvent::mouseLocation();
     menu.popUpMenuPositioningItem_atLocation_inView(None, at, None);
+}
+
+/// For the script hook (`dump:devices`): rebuild the Devices menu and print
+/// each item, indented by depth, with whether the controller enables it.
+pub fn dump_devices(mtm: MainThreadMarker) {
+    let Some(bar) = NSApplication::sharedApplication(mtm).mainMenu() else { return };
+    let title = t!("mb-devices");
+    let Some(menu) = bar.itemArray().iter().find_map(|i| i.submenu().filter(|m| m.title().to_string() == title)) else { return };
+    if let Some(groups) = crate::app::disk_menu() {
+        fill_devices(mtm, &menu, &groups);
+    }
+    fn walk(menu: &NSMenu, depth: usize) {
+        for it in menu.itemArray().iter() {
+            if it.isSeparatorItem() {
+                eprintln!("{}---", "  ".repeat(depth));
+                continue;
+            }
+            let id = it.identifier().map(|i| i.to_string()).unwrap_or_default();
+            let on = id.is_empty() || crate::app::enabled(&id);
+            eprintln!("{}{} [{}]{}", "  ".repeat(depth), it.title(), id, if on { "" } else { " (disabled)" });
+            if let Some(sub) = it.submenu() {
+                walk(&sub, depth + 1);
+            }
+        }
+    }
+    walk(&menu, 0);
 }
