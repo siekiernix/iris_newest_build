@@ -198,3 +198,36 @@ pub fn build(mtm: MainThreadMarker) {
     app.setMainMenu(Some(&bar));
     app.setWindowsMenu(Some(&window));
 }
+
+/// The saved-states menu the toolbar's Saved States opens: each state with
+/// Restore, Rename and Delete (per-item ids, so the controller decides), or
+/// a note when there are none. Pops up under the pointer.
+pub fn saved_states(mtm: MainThreadMarker, states: &[iris_gui_core::controller::session::SavedState]) {
+    use iris_gui_core::controller::ids::item;
+    let keys = KeyMap::default();
+    let menu = NSMenu::initWithTitle(mtm.alloc(), &ns(&t!("ov-saved-states")));
+    if states.is_empty() {
+        let none = system(mtm, &t!("ov-no-states"), sel!(act:), "");
+        none.setEnabled(false);
+        // SAFETY: an item with no target, shown disabled.
+        unsafe { none.setAction(None) };
+        menu.addItem(&none);
+    }
+    for s in states {
+        let sub = NSMenu::initWithTitle(mtm.alloc(), &ns(&s.name));
+        for (title, prefix) in [
+            (t!("ov-restore"), item::RESTORE_STATE),
+            (t!("ov-rename"), item::RENAME_STATE),
+            (t!("ov-delete"), item::DELETE_STATE),
+        ] {
+            sub.addItem(&ours(mtm, &keys, &title, &item::id(prefix, &s.name)));
+        }
+        let it = system(mtm, &s.name, sel!(act:), "");
+        // SAFETY: a parent item; the submenu holds the actions.
+        unsafe { it.setAction(None) };
+        it.setSubmenu(Some(&sub));
+        menu.addItem(&it);
+    }
+    let at = objc2_app_kit::NSEvent::mouseLocation();
+    menu.popUpMenuPositioningItem_atLocation_inView(None, at, None);
+}

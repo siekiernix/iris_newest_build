@@ -39,12 +39,12 @@ pub struct SettingsWindow {
     toml: Option<Retained<NSTextView>>,
 }
 
-fn view<T: Message + AsRef<NSView>>(v: &Retained<T>) -> Retained<NSView> {
+pub fn view<T: Message + AsRef<NSView>>(v: &Retained<T>) -> Retained<NSView> {
     let r: &NSView = (**v).as_ref();
     r.retain()
 }
 
-fn stack(mtm: MainThreadMarker, views: &[Retained<NSView>], vertical: bool, spacing: f64) -> Retained<NSStackView> {
+pub fn stack(mtm: MainThreadMarker, views: &[Retained<NSView>], vertical: bool, spacing: f64) -> Retained<NSStackView> {
     let s = NSStackView::stackViewWithViews(&NSArray::from_retained_slice(views), mtm);
     s.setOrientation(if vertical {
         NSUserInterfaceLayoutOrientation::Vertical
@@ -87,7 +87,7 @@ fn checkbox(mtm: MainThreadMarker, id: &str, title: &str, on: bool) -> Retained<
     b
 }
 
-fn push(mtm: MainThreadMarker, id: &str, title: &str) -> Retained<NSButton> {
+pub fn push(mtm: MainThreadMarker, id: &str, title: &str) -> Retained<NSButton> {
     let b = NSButton::new(mtm);
     b.setBezelStyle(NSBezelStyle::Push);
     b.setTitle(&ns(title));
@@ -290,165 +290,166 @@ impl SettingsWindow {
             rows.push(view(&secondary(mtm, &s.summary)));
         }
         for f in &s.fields {
-            rows.push(self.build_field(mtm, f));
+            rows.push(field_view(mtm, f, &mut self.toml));
         }
         let page = stack(mtm, &rows, true, 14.0);
         page.setEdgeInsets(objc2_foundation::NSEdgeInsets { top: 20.0, left: 24.0, bottom: 24.0, right: 24.0 });
         view(&page)
     }
+}
 
-    fn build_field(&mut self, mtm: MainThreadMarker, f: &Field) -> Retained<NSView> {
-        let id = f.id;
-        let control: Retained<NSView> = match &f.kind {
-            FieldKind::Choice { options, selected } => view(&popup(mtm, id, options, *selected)),
-            FieldKind::Toggle(on) => view(&checkbox(mtm, id, "", *on)),
-            FieldKind::Text { value, placeholder, error } => {
-                let t = text_field(mtm, id, value, placeholder, 260.0);
-                match error {
-                    Some(e) => {
-                        let err = label(mtm, e);
-                        err.setTextColor(Some(&NSColor::systemRedColor()));
-                        view(&stack(mtm, &[view(&t), view(&err)], true, 4.0))
-                    }
-                    None => view(&t),
+/// One field, drawn by kind. The TOML editor's text view lands in `toml`, for Apply.
+pub fn field_view(mtm: MainThreadMarker, f: &Field, toml: &mut Option<Retained<NSTextView>>) -> Retained<NSView> {
+    let id = f.id;
+    let control: Retained<NSView> = match &f.kind {
+        FieldKind::Choice { options, selected } => view(&popup(mtm, id, options, *selected)),
+        FieldKind::Toggle(on) => view(&checkbox(mtm, id, "", *on)),
+        FieldKind::Text { value, placeholder, error } => {
+            let t = text_field(mtm, id, value, placeholder, 260.0);
+            match error {
+                Some(e) => {
+                    let err = label(mtm, e);
+                    err.setTextColor(Some(&NSColor::systemRedColor()));
+                    view(&stack(mtm, &[view(&t), view(&err)], true, 4.0))
                 }
+                None => view(&t),
             }
-            FieldKind::Number { value, min, max, step, unit } => {
-                let s = NSStepper::new(mtm);
-                s.setMinValue(*min);
-                s.setMaxValue(*max);
-                s.setIncrement(*step);
-                s.setDoubleValue(*value);
-                s.setValueWraps(false);
-                wire(&s, id);
-                let shown = if unit.is_empty() { format!("{value}") } else { format!("{value} {unit}") };
-                view(&stack(mtm, &[view(&label(mtm, &shown)), view(&s)], false, 6.0))
-            }
-            FieldKind::Path { value, pick } => {
-                let t = text_field(mtm, id, value, "", 320.0);
-                let title = match pick {
-                    PickKind::File { .. } | PickKind::Folder => t!("common-browse"),
-                };
-                let b = push(mtm, &control_id(id, None, Some(part::BROWSE)), &title);
-                view(&stack(mtm, &[view(&t), view(&b)], false, 6.0))
-            }
-            FieldKind::BankGrid { banks, sizes, summary } => {
-                let labels: Vec<String> =
-                    sizes.iter().map(|mb| if *mb == 0 { t!("common-none") } else { format!("{mb} MB") }).collect();
-                let mut cells: Vec<Retained<NSView>> = Vec::new();
-                for (i, mb) in banks.iter().enumerate() {
-                    let sel = sizes.iter().position(|s| s == mb).unwrap_or(0);
-                    let p = popup(mtm, &control_id(id, Some(i), None), &labels, sel);
-                    cells.push(view(&p));
-                }
-                // Two banks to a line keeps eight banks readable.
-                let mut lines: Vec<Retained<NSView>> =
-                    cells.chunks(2).map(|c| view(&stack(mtm, c, false, 8.0))).collect();
-                lines.push(view(&secondary(mtm, summary)));
-                view(&stack(mtm, &lines, true, 6.0))
-            }
-            FieldKind::DiskTable(rows) => self.disk_table(mtm, id, rows),
-            FieldKind::PortForwardTable(rows) => forward_table(mtm, id, rows),
-            FieldKind::Toml { text } => {
-                let scroll = NSTextView::scrollableTextView(mtm);
-                scroll.setHasVerticalScroller(true);
-                scroll.setBorderType(objc2_app_kit::NSBorderType::BezelBorder);
-                scroll.widthAnchor().constraintEqualToConstant(540.0).setActive(true);
-                scroll.heightAnchor().constraintEqualToConstant(320.0).setActive(true);
-                let doc = scroll.documentView();
-                if let Some(tv) = doc.as_ref().and_then(|d| d.downcast_ref::<NSTextView>()) {
-                    tv.setString(&ns(text));
-                    tv.setFont(Some(&NSFont::userFixedPitchFontOfSize(12.0).unwrap_or_else(|| NSFont::systemFontOfSize(12.0))));
-                    tv.setRichText(false);
-                    tv.setAutomaticQuoteSubstitutionEnabled(false);
-                    tv.setAutomaticDashSubstitutionEnabled(false);
-                    set_id(tv, id);
-                    self.toml = Some(tv.retain());
-                }
-                let apply = push(mtm, &control_id(id, None, Some(part::APPLY)), &t!("common-apply"));
-                view(&stack(mtm, &[view(&scroll), view(&apply)], true, 8.0))
-            }
-            FieldKind::Note(sev, text) => {
-                let mut parts: Vec<Retained<NSView>> = Vec::new();
-                let (icon, color) = match sev {
-                    Severity::Info => (iris_gui_core::controller::icons::Icon::Info, NSColor::secondaryLabelColor()),
-                    Severity::Warning => (iris_gui_core::controller::icons::Icon::Warning, NSColor::systemOrangeColor()),
-                    Severity::Error => (iris_gui_core::controller::icons::Icon::Error, NSColor::systemRedColor()),
-                };
-                if let Some(img) = glyphs::icon(icon, text) {
-                    let iv = NSImageView::imageViewWithImage(&img, mtm);
-                    iv.setContentTintColor(Some(&color));
-                    parts.push(view(&iv));
-                }
-                let l = label(mtm, text);
-                l.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByWordWrapping);
-                l.setPreferredMaxLayoutWidth(480.0);
-                parts.push(view(&l));
-                return view(&stack(mtm, &parts, false, 6.0));
-            }
-        };
-        if let Enabled::No(reason) = &f.enabled {
-            disable(&control, reason);
         }
-        let mut right: Vec<Retained<NSView>> = vec![control];
-        if let Some(h) = &f.help {
-            let l = secondary(mtm, h);
-            l.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-            right.push(view(&l));
+        FieldKind::Number { value, min, max, step, unit } => {
+            let s = NSStepper::new(mtm);
+            s.setMinValue(*min);
+            s.setMaxValue(*max);
+            s.setIncrement(*step);
+            s.setDoubleValue(*value);
+            s.setValueWraps(false);
+            wire(&s, id);
+            let shown = if unit.is_empty() { format!("{value}") } else { format!("{value} {unit}") };
+            view(&stack(mtm, &[view(&label(mtm, &shown)), view(&s)], false, 6.0))
         }
-        // Tables and the TOML editor are wide: their label goes above them.
-        if matches!(f.kind, FieldKind::Toml { .. } | FieldKind::DiskTable(_) | FieldKind::PortForwardTable(_)) {
-            right.insert(0, view(&heading(mtm, &f.label, 13.0)));
-            return view(&stack(mtm, &right, true, 8.0));
+        FieldKind::Path { value, pick } => {
+            let t = text_field(mtm, id, value, "", 320.0);
+            let title = match pick {
+                PickKind::File { .. } | PickKind::Folder => t!("common-browse"),
+            };
+            let b = push(mtm, &control_id(id, None, Some(part::BROWSE)), &title);
+            view(&stack(mtm, &[view(&t), view(&b)], false, 6.0))
         }
-        let name = label(mtm, &f.label);
-        name.setAlignment(objc2_app_kit::NSTextAlignment::Right);
-        name.widthAnchor().constraintEqualToConstant(LABEL_WIDTH).setActive(true);
-        let line = stack(mtm, &[view(&name), view(&stack(mtm, &right, true, 4.0))], false, 12.0);
-        line.setAlignment(NSLayoutAttribute::FirstBaseline);
-        view(&line)
+        FieldKind::BankGrid { banks, sizes, summary } => {
+            let labels: Vec<String> =
+                sizes.iter().map(|mb| if *mb == 0 { t!("common-none") } else { format!("{mb} MB") }).collect();
+            let mut cells: Vec<Retained<NSView>> = Vec::new();
+            for (i, mb) in banks.iter().enumerate() {
+                let sel = sizes.iter().position(|s| s == mb).unwrap_or(0);
+                let p = popup(mtm, &control_id(id, Some(i), None), &labels, sel);
+                cells.push(view(&p));
+            }
+            // Two banks to a line keeps eight banks readable.
+            let mut lines: Vec<Retained<NSView>> =
+                cells.chunks(2).map(|c| view(&stack(mtm, c, false, 8.0))).collect();
+            lines.push(view(&secondary(mtm, summary)));
+            view(&stack(mtm, &lines, true, 6.0))
+        }
+        FieldKind::DiskTable(rows) => disk_table(mtm, id, rows),
+        FieldKind::PortForwardTable(rows) => forward_table(mtm, id, rows),
+        FieldKind::Toml { text } => {
+            let scroll = NSTextView::scrollableTextView(mtm);
+            scroll.setHasVerticalScroller(true);
+            scroll.setBorderType(objc2_app_kit::NSBorderType::BezelBorder);
+            scroll.widthAnchor().constraintEqualToConstant(540.0).setActive(true);
+            scroll.heightAnchor().constraintEqualToConstant(320.0).setActive(true);
+            let doc = scroll.documentView();
+            if let Some(tv) = doc.as_ref().and_then(|d| d.downcast_ref::<NSTextView>()) {
+                tv.setString(&ns(text));
+                tv.setFont(Some(&NSFont::userFixedPitchFontOfSize(12.0).unwrap_or_else(|| NSFont::systemFontOfSize(12.0))));
+                tv.setRichText(false);
+                tv.setAutomaticQuoteSubstitutionEnabled(false);
+                tv.setAutomaticDashSubstitutionEnabled(false);
+                set_id(tv, id);
+                *toml = Some(tv.retain());
+            }
+            let apply = push(mtm, &control_id(id, None, Some(part::APPLY)), &t!("common-apply"));
+            view(&stack(mtm, &[view(&scroll), view(&apply)], true, 8.0))
+        }
+        FieldKind::Note(sev, text) => {
+            let mut parts: Vec<Retained<NSView>> = Vec::new();
+            let (icon, color) = match sev {
+                Severity::Info => (iris_gui_core::controller::icons::Icon::Info, NSColor::secondaryLabelColor()),
+                Severity::Warning => (iris_gui_core::controller::icons::Icon::Warning, NSColor::systemOrangeColor()),
+                Severity::Error => (iris_gui_core::controller::icons::Icon::Error, NSColor::systemRedColor()),
+            };
+            if let Some(img) = glyphs::icon(icon, text) {
+                let iv = NSImageView::imageViewWithImage(&img, mtm);
+                iv.setContentTintColor(Some(&color));
+                parts.push(view(&iv));
+            }
+            let l = label(mtm, text);
+            l.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByWordWrapping);
+            l.setPreferredMaxLayoutWidth(480.0);
+            parts.push(view(&l));
+            return view(&stack(mtm, &parts, false, 6.0));
+        }
+    };
+    if let Enabled::No(reason) = &f.enabled {
+        disable(&control, reason);
     }
+    let mut right: Vec<Retained<NSView>> = vec![control];
+    if let Some(h) = &f.help {
+        let l = secondary(mtm, h);
+        l.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        right.push(view(&l));
+    }
+    // Tables and the TOML editor are wide: their label goes above them.
+    if matches!(f.kind, FieldKind::Toml { .. } | FieldKind::DiskTable(_) | FieldKind::PortForwardTable(_)) {
+        right.insert(0, view(&heading(mtm, &f.label, 13.0)));
+        return view(&stack(mtm, &right, true, 8.0));
+    }
+    let name = label(mtm, &f.label);
+    name.setAlignment(objc2_app_kit::NSTextAlignment::Right);
+    name.widthAnchor().constraintEqualToConstant(LABEL_WIDTH).setActive(true);
+    let line = stack(mtm, &[view(&name), view(&stack(mtm, &right, true, 4.0))], false, 12.0);
+    line.setAlignment(NSLayoutAttribute::FirstBaseline);
+    view(&line)
+}
 
-    fn disk_table(&self, mtm: MainThreadMarker, id: &'static str, rows: &[DiskRow]) -> Retained<NSView> {
-        let kinds = disk_kind_labels();
-        let mut lines: Vec<Retained<NSView>> = Vec::new();
-        for (r, d) in rows.iter().enumerate() {
-            let name = secondary(mtm, &format!("SCSI {}", d.name));
-            name.widthAnchor().constraintEqualToConstant(56.0).setActive(true);
-            let kind = popup(mtm, &control_id(id, Some(r), Some(part::KIND)), &kinds, disk_kind_index(d));
-            let path = text_field(mtm, &control_id(id, Some(r), Some(part::PATH)), &d.path, "", 360.0);
-            let pick = push(mtm, &control_id(id, Some(r), Some(part::PICK)), &t!("settings-choose"));
-            let overlay = checkbox(mtm, &control_id(id, Some(r), Some(part::OVERLAY)), &t!("settings-overlay"), d.overlay);
-            overlay.setToolTip(Some(&ns(&t!("settings-overlay-tip"))));
-            let remove = push(mtm, &control_id(id, Some(r), Some(part::REMOVE)), &t!("config-remove"));
-            // Two lines: what the target is, then its image.
-            let mut first = vec![view(&name), view(&kind), view(&overlay), view(&remove)];
-            if d.scratch {
-                first.insert(2, view(&secondary(mtm, &t!("settings-scratch"))));
-            }
-            let indent = NSView::new(mtm);
-            indent.widthAnchor().constraintEqualToConstant(56.0).setActive(true);
-            let second = [indent, view(&path), view(&pick)];
-            let mut line = vec![view(&stack(mtm, &first, false, 6.0)), view(&stack(mtm, &second, false, 6.0))];
-            if let Some(p) = &d.problem {
-                let l = label(mtm, p);
-                l.setTextColor(Some(&NSColor::systemOrangeColor()));
-                line.push(view(&l));
-            }
-            lines.push(view(&stack(mtm, &line, true, 4.0)));
+fn disk_table(mtm: MainThreadMarker, id: &'static str, rows: &[DiskRow]) -> Retained<NSView> {
+    let kinds = disk_kind_labels();
+    let mut lines: Vec<Retained<NSView>> = Vec::new();
+    for (r, d) in rows.iter().enumerate() {
+        let name = secondary(mtm, &format!("SCSI {}", d.name));
+        name.widthAnchor().constraintEqualToConstant(56.0).setActive(true);
+        let kind = popup(mtm, &control_id(id, Some(r), Some(part::KIND)), &kinds, disk_kind_index(d));
+        let path = text_field(mtm, &control_id(id, Some(r), Some(part::PATH)), &d.path, "", 360.0);
+        let pick = push(mtm, &control_id(id, Some(r), Some(part::PICK)), &t!("settings-choose"));
+        let overlay = checkbox(mtm, &control_id(id, Some(r), Some(part::OVERLAY)), &t!("settings-overlay"), d.overlay);
+        overlay.setToolTip(Some(&ns(&t!("settings-overlay-tip"))));
+        let remove = push(mtm, &control_id(id, Some(r), Some(part::REMOVE)), &t!("config-remove"));
+        // Two lines: what the target is, then its image.
+        let mut first = vec![view(&name), view(&kind), view(&overlay), view(&remove)];
+        if d.scratch {
+            first.insert(2, view(&secondary(mtm, &t!("settings-scratch"))));
         }
-        let add = stack(
-            mtm,
-            &[
-                view(&push(mtm, &control_id(id, None, Some(part::ADD_DISK)), &t!("settings-add-disk"))),
-                view(&push(mtm, &control_id(id, None, Some(part::ADD_CDROM)), &t!("settings-add-cdrom"))),
-            ],
-            false,
-            8.0,
-        );
-        lines.push(view(&add));
-        view(&stack(mtm, &lines, true, 8.0))
+        let indent = NSView::new(mtm);
+        indent.widthAnchor().constraintEqualToConstant(56.0).setActive(true);
+        let second = [indent, view(&path), view(&pick)];
+        let mut line = vec![view(&stack(mtm, &first, false, 6.0)), view(&stack(mtm, &second, false, 6.0))];
+        if let Some(p) = &d.problem {
+            let l = label(mtm, p);
+            l.setTextColor(Some(&NSColor::systemOrangeColor()));
+            line.push(view(&l));
+        }
+        lines.push(view(&stack(mtm, &line, true, 4.0)));
     }
+    let add = stack(
+        mtm,
+        &[
+            view(&push(mtm, &control_id(id, None, Some(part::ADD_DISK)), &t!("settings-add-disk"))),
+            view(&push(mtm, &control_id(id, None, Some(part::ADD_CDROM)), &t!("settings-add-cdrom"))),
+        ],
+        false,
+        8.0,
+    );
+    lines.push(view(&add));
+    view(&stack(mtm, &lines, true, 8.0))
 }
 
 fn forward_table(mtm: MainThreadMarker, id: &'static str, rows: &[ForwardRow]) -> Retained<NSView> {

@@ -28,6 +28,7 @@ struct Shell {
     /// The controller agreed to quit: let the next terminate through.
     may_quit: bool,
     settings: Option<crate::settings::SettingsWindow>,
+    new_machine: Option<crate::new_machine::NewMachineWindow>,
 }
 
 thread_local! {
@@ -112,7 +113,7 @@ fn start(mtm: MainThreadMarker) {
     head1.set_wake(wake.clone());
     win.window.makeKeyAndOrderFront(None);
     let empty = app.is_empty();
-    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None }));
+    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None, new_machine: None }));
     NSApplication::sharedApplication(mtm).activate();
     refresh();
     tick();
@@ -228,6 +229,9 @@ fn refresh() {
 
 /// A settings control reported a new value.
 pub fn setting(id: String, value: iris_gui_core::controller::settings::Value) {
+    if id.starts_with("new-machine.") {
+        return new_machine_control(id, value);
+    }
     enum Then {
         Page,
         Act(iris_gui_core::controller::settings::SettingsAction),
@@ -245,6 +249,58 @@ pub fn setting(id: String, value: iris_gui_core::controller::settings::Value) {
         Some(Then::Page) => refresh(),
         Some(Then::Act(a)) => dispatch(AppAction::Settings(a)),
         None => {}
+    }
+}
+
+/// Open a fresh New Machine window.
+fn open_new_machine() {
+    let m = mtm();
+    let w = with(|s| {
+        if let Some(old) = s.new_machine.take() {
+            old.window.orderOut(None);
+        }
+        let w = crate::new_machine::NewMachineWindow::new(m);
+        let win = w.window.clone();
+        s.new_machine = Some(w);
+        win
+    });
+    if let Some(w) = w {
+        w.makeKeyAndOrderFront(None);
+    }
+}
+
+/// A control in the New Machine window reported a value.
+fn new_machine_control(id: String, value: iris_gui_core::controller::settings::Value) {
+    use crate::new_machine::Next;
+    let m = mtm();
+    let Some(next) = with(|s| s.new_machine.as_mut().map(|w| w.control(&id, value))).flatten() else { return };
+    match next {
+        Next::Nothing => {}
+        Next::Redraw => {
+            with(|s| s.new_machine.as_mut().map(|w| w.redraw(m)));
+        }
+        Next::Pick(e) => {
+            // The picker runs here, with no borrow held; its answer is the window's.
+            let out = crate::effects::run(m, vec![e]);
+            with(|s| {
+                if let Some(w) = s.new_machine.as_mut() {
+                    if out.answers.iter().any(|a| w.spec.picked(a)) {
+                        w.redraw(m);
+                    }
+                }
+            });
+        }
+        Next::Close => {
+            if let Some(w) = with(|s| s.new_machine.take()).flatten() {
+                w.window.orderOut(None);
+            }
+        }
+        Next::Create(action) => {
+            if let Some(w) = with(|s| s.new_machine.take()).flatten() {
+                w.window.orderOut(None);
+            }
+            dispatch(action);
+        }
     }
 }
 
@@ -366,10 +422,13 @@ fn shell_command(c: ShellCommand) {
             }]);
         }
         ShellCommand::Settings => open_settings(None),
-        ShellCommand::SavedStates
-        | ShellCommand::BrowseFiles
+        ShellCommand::NewMachine => open_new_machine(),
+        ShellCommand::SavedStates => {
+            let states = with(|s| s.app.saved_states()).unwrap_or_default();
+            crate::menu::saved_states(mtm(), &states);
+        }
+        ShellCommand::BrowseFiles
         | ShellCommand::BrowseDisk(_)
-        | ShellCommand::NewMachine
         | ShellCommand::AppSettings
         | ShellCommand::Benchmark
         | ShellCommand::Diagnostics => {

@@ -6,6 +6,8 @@ use iris::config::{FibreChannelConfig, GraphicsBoard, MachineConfig, MachineProf
 use iris::cpu::parts::Part;
 use iris::dev::ng1::vc2_timings::NewportResolution;
 
+use super::settings::{Field, Value};
+use super::{Answer, Effect, Enabled, PickSpec, Severity};
 use crate::model::hardware::{default_name, distribute_ram};
 use crate::model::{machines, ram};
 
@@ -140,9 +142,240 @@ impl NewMachineSpec {
     }
 }
 
+/// Field ids of the new-machine form ([`NewMachineSpec::fields`]).
+pub mod field {
+    pub const NAME: &str = "new-machine.name";
+    pub const MODEL: &str = "new-machine.model";
+    pub const CPU: &str = "new-machine.cpu";
+    pub const GRAPHICS: &str = "new-machine.graphics";
+    pub const RAM: &str = "new-machine.ram";
+    pub const DISK: &str = "new-machine.disk";
+    pub const ATTACH_CDROM: &str = "new-machine.attach-cdrom";
+    pub const CDROM: &str = "new-machine.cdrom";
+    pub const NOTE: &str = "new-machine.note";
+    /// The Create button.
+    pub const CREATE: &str = "new-machine.create";
+}
+
+/// Purposes of the image pickers' answers.
+pub const PICK_DISK: &str = "app.new-machine.disk";
+pub const PICK_CDROM: &str = "app.new-machine.cdrom";
+
+impl NewMachineSpec {
+    /// The form as fields, the same kinds the settings use, so a shell draws
+    /// it with its settings renderer. Path fields browse with
+    /// [`NewMachineSpec::pick`].
+    pub fn fields(&self) -> Vec<Field> {
+        use super::settings::{FieldKind as K, PickKind};
+        let p = self.profile;
+        let one = |n: usize, why: String| Enabled::when(n > 1, || why);
+        let cpus = p.cpus();
+        let boards: Vec<GraphicsBoard> =
+            GraphicsBoard::ALL.iter().copied().filter(|b| crate::model::hardware::board_supported(*b, p)).collect();
+        let presets = self.ram_presets();
+        let mut f = vec![
+            Field {
+                id: field::NAME,
+                label: t!("dialog-new-machine-name"),
+                help: None,
+                kind: K::Text { value: self.name.clone(), placeholder: default_name(p).into(), error: self.name_error() },
+                enabled: Enabled::Yes,
+            },
+            Field {
+                id: field::MODEL,
+                label: t!("dialog-new-machine-model"),
+                help: None,
+                kind: K::Choice {
+                    options: MachineProfile::ALL.iter().map(|m| m.label().to_string()).collect(),
+                    selected: MachineProfile::ALL.iter().position(|m| *m == p).unwrap_or(0),
+                },
+                enabled: Enabled::Yes,
+            },
+            Field {
+                id: field::CPU,
+                label: t!("dialog-new-machine-cpu"),
+                help: None,
+                kind: K::Choice {
+                    options: cpus.iter().map(|c| c.label().to_string()).collect(),
+                    selected: cpus.iter().position(|c| std::ptr::eq(*c, self.cpu)).unwrap_or(0),
+                },
+                enabled: one(cpus.len(), t!("settings-one-cpu")),
+            },
+        ];
+        // The O2's display is built in: no board to choose.
+        if p != MachineProfile::O2Ip32 {
+            f.push(Field {
+                id: field::GRAPHICS,
+                label: t!("config-graphics-board"),
+                help: None,
+                kind: K::Choice {
+                    options: boards.iter().map(|b| b.label().to_string()).collect(),
+                    selected: boards.iter().position(|b| *b == self.graphics).unwrap_or(0),
+                },
+                enabled: one(boards.len(), t!("settings-one-board")),
+            });
+        }
+        f.extend([
+            Field {
+                id: field::RAM,
+                label: t!("dialog-new-machine-ram-total"),
+                help: None,
+                kind: K::Choice {
+                    options: presets.iter().map(|mb| t!("dialog-new-machine-mb", size = *mb)).collect(),
+                    selected: presets.iter().position(|mb| *mb == self.ram_total_mb).unwrap_or(0),
+                },
+                enabled: Enabled::Yes,
+            },
+            Field {
+                id: field::DISK,
+                label: t!("dialog-new-machine-hdd"),
+                help: None,
+                kind: K::Path { value: self.disk_path.clone(), pick: PickKind::File { filters: Vec::new() } },
+                enabled: Enabled::Yes,
+            },
+        ]);
+        if !p.is_ip35_bricks() {
+            f.push(Field {
+                id: field::ATTACH_CDROM,
+                label: t!("dialog-new-machine-cdrom-attach"),
+                help: None,
+                kind: K::Toggle(self.attach_cdrom),
+                enabled: Enabled::Yes,
+            });
+            if self.attach_cdrom {
+                f.push(Field {
+                    id: field::CDROM,
+                    label: t!("dialog-new-machine-cdrom"),
+                    help: None,
+                    kind: K::Path { value: self.cdrom_path.clone(), pick: PickKind::File { filters: Vec::new() } },
+                    enabled: Enabled::Yes,
+                });
+            }
+        }
+        let note = match p {
+            MachineProfile::OctaneIp30 => Some(t!("dialog-new-machine-octane-note")),
+            MachineProfile::O2Ip32 => Some(t!("dialog-new-machine-o2-note")),
+            _ if p.ip28() => Some(t!("dialog-new-machine-ip28-note")),
+            _ => None,
+        };
+        if let Some(n) = note {
+            f.push(Field { id: field::NOTE, label: String::new(), help: None, kind: K::Note(Severity::Info, n), enabled: Enabled::Yes });
+        }
+        f
+    }
+
+    /// Apply a form control's new value. `false` when it changed nothing.
+    pub fn apply(&mut self, id: &str, value: Value) -> bool {
+        let before = self.clone();
+        match (id, value) {
+            (field::NAME, Value::Text(t)) => self.name = t,
+            (field::MODEL, Value::Index(i)) => {
+                if let Some(p) = MachineProfile::ALL.get(i) {
+                    self.set_profile(*p);
+                }
+            }
+            (field::CPU, Value::Index(i)) => {
+                if let Some(c) = self.profile.cpus().get(i) {
+                    self.cpu = c;
+                }
+            }
+            (field::GRAPHICS, Value::Index(i)) => {
+                let p = self.profile;
+                if let Some(b) = GraphicsBoard::ALL
+                    .iter()
+                    .copied()
+                    .filter(|b| crate::model::hardware::board_supported(*b, p))
+                    .nth(i)
+                {
+                    self.graphics = b;
+                }
+            }
+            (field::RAM, Value::Index(i)) => {
+                if let Some(mb) = self.ram_presets().get(i) {
+                    self.ram_total_mb = *mb;
+                    self.ram_banks = distribute_ram(*mb, self.profile);
+                }
+            }
+            (field::DISK, Value::Text(t)) => self.disk_path = t.trim().to_string(),
+            (field::ATTACH_CDROM, Value::Bool(b)) => self.attach_cdrom = b,
+            (field::CDROM, Value::Text(t)) => self.cdrom_path = t.trim().to_string(),
+            _ => {}
+        }
+        *self != before
+    }
+
+    /// The picker a path field's Browse button opens; its answer comes back
+    /// as `Answer::Picked` and goes to [`NewMachineSpec::picked`].
+    pub fn pick(&self, id: &str) -> Option<Effect> {
+        let (purpose, title, filters) = match id {
+            field::DISK => (PICK_DISK, t!("dialog-new-machine-hdd-picker"), vec![(t!("dialog-new-machine-hdd-filter"), vec!["img".into(), "raw".into(), "chd".into(), "hda".into()])]),
+            field::CDROM => (PICK_CDROM, t!("dialog-new-machine-cdrom-picker"), vec![(t!("dialog-new-machine-iso-filter"), vec!["iso".into(), "img".into(), "bin".into(), "toast".into(), "cdr".into(), "chd".into()])]),
+            _ => return None,
+        };
+        Some(Effect::PickFile(PickSpec {
+            purpose,
+            title,
+            filters,
+            save: false,
+            file_name: String::new(),
+            start_dir: None,
+            multiple: false,
+        }))
+    }
+
+    /// A picker's answer: set the field it was for.
+    pub fn picked(&mut self, answer: &Answer) -> bool {
+        let Answer::Picked { purpose, paths } = answer else { return false };
+        let id = match *purpose {
+            PICK_DISK => field::DISK,
+            PICK_CDROM => field::CDROM,
+            _ => return false,
+        };
+        let Some(path) = paths.first() else { return false };
+        self.apply(id, Value::Text(path.to_string_lossy().into_owned()))
+    }
+
+    /// Why Create is not available now, if it is not.
+    pub fn can_create(&self) -> Enabled {
+        match self.name_error() {
+            Some(e) => Enabled::No(e),
+            None => Enabled::Yes,
+        }
+    }
+
+    /// The action that creates the machine.
+    pub fn create(&self) -> super::app::AppAction {
+        super::app::AppAction::CreateMachine { name: self.effective_name().to_string(), config: Box::new(self.build()) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_form_edits_the_spec() {
+        let mut s = NewMachineSpec::default();
+        let fields = s.fields();
+        assert!(fields.iter().any(|f| f.id == field::NAME));
+        let o2 = MachineProfile::ALL.iter().position(|m| *m == MachineProfile::O2Ip32).unwrap();
+        assert!(s.apply(field::MODEL, Value::Index(o2)));
+        assert_eq!(s.profile, MachineProfile::O2Ip32);
+        assert!(s.fields().iter().any(|f| f.id == field::NOTE));
+        assert!(!s.fields().iter().any(|f| f.id == field::GRAPHICS), "the O2's display is built in");
+        assert!(!s.apply(field::MODEL, Value::Index(o2)), "no change");
+        assert!(s.apply(field::ATTACH_CDROM, Value::Bool(true)));
+        assert!(s.fields().iter().any(|f| f.id == field::CDROM));
+        let picked = Answer::Picked { purpose: PICK_CDROM, paths: vec!["/x/irix.iso".into()] };
+        assert!(s.picked(&picked));
+        assert_eq!(s.cdrom_path, "/x/irix.iso");
+        assert!(matches!(s.pick(field::DISK), Some(Effect::PickFile(_))));
+        s.apply(field::NAME, Value::Text("../bad".into()));
+        assert!(matches!(s.can_create(), Enabled::No(_)));
+        s.apply(field::NAME, Value::Text("lab".into()));
+        assert_eq!(s.can_create(), Enabled::Yes);
+        s.build().validate().unwrap();
+    }
 
     #[test]
     fn every_profile_builds_a_valid_machine() {
