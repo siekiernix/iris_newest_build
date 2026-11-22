@@ -1,5 +1,5 @@
 use eframe::egui::{self, Color32, ComboBox, Grid, RichText, TextEdit};
-use iris::config::{MachineConfig, MachineProfile, ScsiDeviceConfig, VALID_BANK_SIZES};
+use iris::config::{MachineConfig, MachineProfile, VALID_BANK_SIZES};
 use iris::cpu::parts::{self, Part};
 use iris::dev::ng1::vc2_timings::NewportResolution;
 
@@ -334,47 +334,24 @@ impl NewMachineDialog {
                     if let Err(e) = &valid { ui.colored_label(Color32::from_rgb(230, 140, 70), e); }
                     if ui.add_enabled(valid.is_ok(), crate::extra_ui::filled_button(RichText::new(t!("dialog-new-machine-create")).strong(), Color32::from_rgb(60, 110, 60))).clicked()
                     {
-                        let mut cfg = MachineConfig::default();
-                        cfg.machine.profile = self.profile;
-                        cfg.set_cpu(self.cpu);
-                        cfg.banks_set = true;
-                        cfg.graphics.board = Some(self.graphics);
-                        cfg.graphics.resolution = if self.graphics == iris::config::GraphicsBoard::Newport { self.resolution } else { NewportResolution::Guest };
-                        cfg.prom = if self.use_embedded_prom { String::new() } else { self.prom_path.clone() };
-                        // "(embedded)" names the PROM built into iris.
-                        if cfg.prom.is_empty() { cfg.prom = "(embedded)".into(); }
-                        cfg.nvram = self.nvram_path.clone();
-                        cfg.nveeprom = self.nveeprom_path.clone();
-                        cfg.banks = if self.ram_advanced {
-                            self.ram_banks
-                        } else {
-                            distribute_ram(self.ram_total_mb, self.profile)
+                        let spec = iris_gui_core::controller::new_machine::NewMachineSpec {
+                            name: self.name.clone(),
+                            profile: self.profile,
+                            cpu: self.cpu,
+                            graphics: self.graphics,
+                            resolution: self.resolution,
+                            use_embedded_prom: self.use_embedded_prom,
+                            prom_path: self.prom_path.clone(),
+                            nvram_path: self.nvram_path.clone(),
+                            nveeprom_path: self.nveeprom_path.clone(),
+                            ram_total_mb: self.ram_total_mb,
+                            ram_advanced: self.ram_advanced,
+                            ram_banks: self.ram_banks,
+                            disk_path: self.scsi1_path.clone(),
+                            cdrom_path: self.cdrom4_path.clone(),
+                            attach_cdrom: self.attach_cdrom,
                         };
-                        // Keep the PROM's flash records between runs.
-                        if self.profile == MachineProfile::OctaneIp30 {
-                            cfg.octane.flash = Some("flash-ip30.bin".into());
-                        }
-                        // SCSI defaults: drop the built-in entries unless the
-                        // user explicitly opted in.
-                        if !self.profile.is_ip35_bricks() { cfg.scsi.clear(); }
-                        if self.profile.is_ip35_bricks() && !self.scsi1_path.is_empty() {
-                            let mut fc = iris::config::FibreChannelConfig::default();
-                            fc.disks.insert(1, ScsiDeviceConfig { path: self.scsi1_path.clone(), ..Default::default() });
-                            cfg.fibre_channel = Some(fc);
-                        }
-                        if !self.profile.is_ip35_bricks() && !self.scsi1_path.is_empty() {
-                            cfg.scsi.insert(1, ScsiDeviceConfig {
-                                path: self.scsi1_path.clone(),
-                                ..Default::default()
-                            });
-                        }
-                        if !self.profile.is_ip35_bricks() && self.attach_cdrom && !self.cdrom4_path.is_empty() {
-                            cfg.scsi.insert(4, ScsiDeviceConfig {
-                                path: self.cdrom4_path.clone(),
-                                cdrom: true,
-                                ..Default::default()
-                            });
-                        }
+                        let cfg = spec.build();
                         let name = if self.name.trim().is_empty() { default_name(self.profile) } else { self.name.trim() }.to_string();
                         self.result = Some(NewMachineResult { name, cfg });
                         close = true;

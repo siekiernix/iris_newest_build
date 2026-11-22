@@ -29,6 +29,7 @@ pub mod ids;
 pub mod keys;
 pub mod labels;
 pub mod network;
+pub mod new_machine;
 mod power;
 pub mod profile;
 pub mod serial;
