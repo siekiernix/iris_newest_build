@@ -57,6 +57,11 @@ pub struct GuiSettings {
     #[serde(default)]
     pub disk_folders: Vec<String>,
 
+    /// The user's folders in the machine library, in display order. A machine
+    /// in no folder is shown under its family.
+    #[serde(default)]
+    pub library_folders: Vec<LibraryFolder>,
+
     /// Runtime storage root, captured before the working directory changes.
     #[serde(skip)]
     root: Option<PathBuf>,
@@ -66,6 +71,17 @@ pub struct GuiSettings {
     /// Protect the legacy JSON if any conversion or preference read failed.
     #[serde(skip)]
     migration_pending: bool,
+}
+
+/// One user folder in the machine library.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryFolder {
+    pub name: String,
+    /// Machine names, in display order.
+    #[serde(default)]
+    pub machines: Vec<String>,
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 impl Default for GuiSettings {
@@ -80,6 +96,7 @@ impl Default for GuiSettings {
             last_config: None,
             bookmarks: BTreeMap::new(),
             disk_folders: Vec::new(),
+            library_folders: Vec::new(),
             root: None,
             errors: Vec::new(),
             migration_pending: false,

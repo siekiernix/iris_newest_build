@@ -19,10 +19,13 @@
 //! - Controls are icons ([`icons`]) with tooltips ([`labels`]); the shell picks
 //!   the glyph.
 
+pub mod app;
 pub mod icons;
 pub mod ids;
 pub mod keys;
 pub mod labels;
+pub mod profile;
+pub mod session;
 
 pub use crate::model::job::{NoWake, Notify, Progress, Snapshot as JobSnapshot, Status as JobStatus, Unit};
 
@@ -105,6 +108,31 @@ pub enum Effect {
     CopyToClipboard(String),
     /// Quit the application; every guard (running machine, disk sync) passed.
     Quit,
+}
+
+/// The user's answer to an [`Effect`] that asked something. Every controller
+/// that emits such an effect has an `Answer(Answer)` action; the shell routes the
+/// answer back to the controller that asked, carrying the spec's `purpose`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+    /// A file or folder dialog closed; empty when cancelled.
+    Picked { purpose: &'static str, paths: Vec<PathBuf> },
+    Confirmed { purpose: &'static str, yes: bool },
+    /// A text prompt closed; `None` when cancelled.
+    Text { purpose: &'static str, text: Option<String> },
+    /// A [`ChoiceSpec`] button, by index.
+    Chose { purpose: &'static str, index: usize },
+}
+
+impl Answer {
+    pub fn purpose(&self) -> &'static str {
+        match self {
+            Answer::Picked { purpose, .. }
+            | Answer::Confirmed { purpose, .. }
+            | Answer::Text { purpose, .. }
+            | Answer::Chose { purpose, .. } => purpose,
+        }
+    }
 }
 
 /// A file or folder picker; `purpose` says which `Action` the answer belongs to.

@@ -219,6 +219,68 @@ pub fn save(root: &Path, name: &str, cfg: &mut MachineConfig) -> Result<(), Stri
     write(&config_path(root, name)?, &text)
 }
 
+/// Make `dir` the process working directory, creating it and its `disks`
+/// folder first. Paths in a machine's TOML are relative to its folder, and the
+/// emulator resolves them against the working directory.
+pub fn enter(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir.join("disks")).map_err(|e| e.to_string())?;
+    std::env::set_current_dir(dir)
+        .map_err(|e| t!("toast-enter-dir-failed", path = dir.display(), error = e.to_string()))?;
+    #[cfg(feature = "appstore")]
+    std::env::set_var("IRIS_CHD_DIFF_DIR", dir.join("chd-diffs"));
+    Ok(())
+}
+
+/// Files under this size that live in the source machine's folder are copied
+/// by [`duplicate`] (NVRAM, EEPROM, flash); larger ones (disk images) are shared.
+pub const DUPLICATE_COPY_LIMIT: u64 = 4 * 1024 * 1024;
+
+/// Copy machine `src` to a new machine `dst`. Small files in the source folder
+/// (battery-backed NVRAM and the like) are copied so the two machines keep
+/// their own; larger ones, the disk images, are not copied: the duplicate
+/// refers to the original's files by absolute path. Returns those shared
+/// files, so the user can be told.
+pub fn duplicate(root: &Path, src: &str, dst: &str) -> Result<(MachineConfig, Vec<String>), String> {
+    let src_dir = directory(root, src)?;
+    let dst_dir = directory(root, dst)?;
+    let mut cfg = read(&config_path(root, src)?)?;
+    std::fs::create_dir_all(dst_dir.join("disks")).map_err(|e| e.to_string())?;
+    let mut shared = Vec::new();
+    let mut failed = None;
+    visit_paths(&mut cfg, |p| {
+        if p.is_empty() || iris::dev::prom_image::is_embedded_keyword(p) || iris::http_disk::is_url(p) {
+            return;
+        }
+        let from = resolve(&src_dir, p);
+        let Some(inside) = relative(&src_dir, &from) else { return };
+        let small = std::fs::metadata(&from).map(|m| m.is_file() && m.len() <= DUPLICATE_COPY_LIMIT);
+        match small {
+            Ok(true) => {
+                let to = dst_dir.join(&inside);
+                if let Some(parent) = to.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::copy(&from, &to) {
+                    failed.get_or_insert_with(|| file_error(&from, e));
+                }
+                *p = inside.to_string_lossy().into_owned();
+            }
+            Ok(false) => {
+                shared.push(from.to_string_lossy().into_owned());
+                *p = from.to_string_lossy().into_owned();
+            }
+            // Not there (yet): keep the relative name, which the new machine
+            // creates in its own folder when it runs.
+            Err(_) => {}
+        }
+    });
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    save(root, dst, &mut cfg)?;
+    Ok((cfg, shared))
+}
+
 pub fn discover(
     root: &Path,
 ) -> (
@@ -399,6 +461,28 @@ pub mod testing {
 pub(crate) mod tests {
     use super::*;
     pub use super::testing::TempRoot;
+
+    #[test]
+    fn duplicate_copies_small_files_and_shares_disks() {
+        let root = TempRoot::new("dup");
+        let mut cfg = MachineConfig::default();
+        let src = directory(&root.0, "indy").unwrap();
+        std::fs::create_dir_all(src.join("disks")).unwrap();
+        std::fs::write(src.join("nvram.bin"), [7u8; 64]).unwrap();
+        let disk = src.join("disks/root.img");
+        let f = std::fs::File::create(&disk).unwrap();
+        f.set_len(DUPLICATE_COPY_LIMIT + 1).unwrap();
+        cfg.nvram = "nvram.bin".into();
+        cfg.scsi.get_mut(&1).unwrap().path = "disks/root.img".into();
+        save(&root.0, "indy", &mut cfg).unwrap();
+        let (copy, shared) = duplicate(&root.0, "indy", "indy-2").unwrap();
+        let dst = directory(&root.0, "indy-2").unwrap();
+        assert_eq!(std::fs::read(dst.join("nvram.bin")).unwrap(), vec![7u8; 64]);
+        assert_eq!(copy.nvram, "nvram.bin");
+        assert_eq!(shared, vec![disk.to_string_lossy().into_owned()]);
+        let reread = read(&config_path(&root.0, "indy-2").unwrap()).unwrap();
+        assert_eq!(reread.scsi[&1].path, disk.to_string_lossy());
+    }
 
     #[test]
     fn saved_toml_roundtrips_every_path_and_preserves_non_path_strings() {

@@ -17,7 +17,7 @@ CONTRIBUTING section before writing a controller.
 |---|---|
 | Branch `core-activity-counters` | Merged into `main` as PR techomancer/iris#797 (2026-11-22). |
 | Branch `iris-newgui` | Rebased onto `main` after #797 merged (2026-11-22). Local only, never pushed. Holds this plan and the GUI work. |
-| GUI code | Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
+| GUI code | Phase 2 under way: App slice done (library, folders, duplicate, quit guard on `AppController`; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
 | Mock-ups | **Not in the repository, by the user's decision; do not commit mock-ups or screenshots.** Seven boards (stopped, running and settings in light and dark, and the macOS menu bar) are in the git-ignored `ignore/mockups/` on the user's machine, with their sources in `src/` (`node expand.js <in> <out.html> [light|dark]` makes plain HTML) and the annotated feedback screenshot; ask the user if the folder is absent. They predate the feedback in [Design changes from feedback](#design-changes-from-feedback-2026-11-21), so [The window](#the-window) is the specification. |
 | Unrelated finding | `kona-tile-handoff-race.md`: a real hang in the KONA tile scheduler, test ignored, not fixed. Not part of this work. |
 
@@ -459,6 +459,34 @@ Approved:
 
 Not approved, ask first: a serial counter in the core; anything else in
 `src/`; any change in `../rusty-backup` (it is a separate repository).
+
+## Implementer decisions (2026-11-22)
+
+- **Controller composition.** `AppController` is the root each shell owns. It
+  owns the `SessionController` (which owns the worker handle), so library
+  changes can wait for the worker. Window-like tasks with their own lifetime
+  (serial console, benchmark, camera test, disk browser, dialogs) are separate
+  controllers the app creates and the shell holds and ticks.
+- **Answers.** Every effect that asks something carries a `purpose`; the shell
+  answers with `Answer` (`Picked`, `Confirmed`, `Text`, `Chose`) in the asking
+  controller's `Answer(..)` action. One generic effect host per shell.
+- **Toasts** are `Effect::Toast`; each shell shows them in its status line. The
+  controller keeps no toast state.
+- **Library folders** live in `gui.json` (`library_folders`: name, machines,
+  collapsed). A machine in no folder shows under its family
+  (`controller::profile::Family`).
+- **Duplicate** copies the TOML and every file under 4 MB in the machine's
+  folder (NVRAM, EEPROM, flash); larger files (disk images) stay where they are
+  and the copy refers to them by absolute path. The toast says how many are
+  shared. Copying disk images silently could fill a disk.
+- **Library icons** (the user's open question, proposed answer used): each
+  profile has a `MachineIcon` in the `ProfileTraits` table; a shell maps it to
+  a picture, falling back to a generic glyph. Changing the answer is one match
+  per shell.
+- **Interim accessors.** `AppController::config_mut`, `prefs_mut` and
+  `SessionController::handle{,_mut}` are `#[doc(hidden)]` bridges for egui
+  code not yet on a controller; each slice removes its uses, and they go when
+  the boundary count reaches 0.
 
 ## Open
 

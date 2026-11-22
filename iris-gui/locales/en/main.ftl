@@ -70,6 +70,10 @@ menu-file-no-machines = No saved machines
 menu-file-rename-machine = Rename machine…
 menu-file-rename-machine-disabled-tip = No machine is selected.
 menu-file-delete-machine = Delete machine
+menu-file-duplicate-machine = Duplicate machine
+menu-file-duplicate-machine-tip = Copy the machine's settings and NVRAM. The copy uses the same disk images.
+menu-file-show-folder = Show machine folder
+menu-file-open-config = Open config file
 menu-file-premiere = Prepare for Premiere…
 menu-file-folders-heading = Disk folder access
 menu-file-grant-folder = Grant a disk folder…
@@ -279,6 +283,13 @@ toast-rename-failed = Couldn't rename the machine: { $error }
 toast-renamed = Renamed to { $name }.
 toast-delete-failed = Couldn't delete the machine: { $error }
 toast-deleted = Deleted { $name }. Its disk images and NVRAM files were kept.
+toast-duplicated = Made { $name }, a copy.
+toast-duplicated-shared = Made { $name }, a copy. It shares { $count ->
+    [one] one disk image
+   *[other] { $count } disk images
+} with the original; run only one of them at a time.
+toast-duplicate-failed = Couldn't copy the machine: { $error }
+toast-no-machine = No machine is selected.
 main-settings-no-machine = Default
 # $name is the machine's name.
 main-settings-heading = Settings: { $name }
