@@ -29,6 +29,8 @@ mod menu;
 #[cfg(target_os = "macos")]
 mod new_machine;
 #[cfg(target_os = "macos")]
+mod panels;
+#[cfg(target_os = "macos")]
 mod settings;
 #[cfg(target_os = "macos")]
 mod summary;

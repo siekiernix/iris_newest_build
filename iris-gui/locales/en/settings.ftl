@@ -40,3 +40,17 @@ settings-scratch = Scratch disk
 settings-choose = Choose…
 settings-window-title = { $name } Settings
 settings-no-machine = Select a machine to change its settings.
+
+## Application preferences (app-wide, not per machine).
+
+prefs-window-title = Preferences
+prefs-display-size = Guest display size
+prefs-display-fit = Fit the window
+prefs-display-scale = Fixed scale
+prefs-scale-when-fixed = Used when the display has a fixed scale.
+prefs-integer-only = Whole multiples only
+prefs-integer-only-help = Scale the guest display by 1×, 2×, 3× and so on, so every pixel is the same size.
+prefs-filter = Smoothing
+prefs-filter-auto = Sharp at whole multiples
+prefs-filter-nearest = Always sharp
+prefs-filter-linear = Always smooth

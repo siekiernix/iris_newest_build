@@ -34,6 +34,7 @@ pub mod network;
 pub mod new_machine;
 pub mod overview;
 mod power;
+pub mod preferences;
 pub mod profile;
 pub mod serial;
 pub mod session;

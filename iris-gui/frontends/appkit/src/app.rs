@@ -30,6 +30,11 @@ struct Shell {
     settings: Option<crate::settings::SettingsWindow>,
     new_machine: Option<crate::new_machine::NewMachineWindow>,
     browser: Option<crate::browser::BrowserWindow>,
+    prefs: Option<crate::panels::PrefsWindow>,
+    net: Option<crate::panels::NetWindow>,
+    serial: Option<crate::panels::SerialWindow>,
+    camera: Option<crate::panels::CameraWindow>,
+    bench: Option<crate::panels::BenchWindow>,
 }
 
 thread_local! {
@@ -114,7 +119,7 @@ fn start(mtm: MainThreadMarker) {
     head1.set_wake(wake.clone());
     win.window.makeKeyAndOrderFront(None);
     let empty = app.is_empty();
-    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None, new_machine: None, browser: None }));
+    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None, new_machine: None, browser: None, prefs: None, net: None, serial: None, camera: None, bench: None }));
     NSApplication::sharedApplication(mtm).activate();
     refresh();
     tick();
@@ -235,7 +240,15 @@ fn refresh() {
             }
             (None, None) => {}
         }
-        s.app.autosave_due_in()
+        refresh_panels(m, s);
+        // The camera preview has no wake of its own, and a benchmark wakes only
+        // between kernels: poll them while they run.
+        let bench = s.bench.as_ref().is_some_and(|b| b.ctl.is_running()).then(|| std::time::Duration::from_secs(1));
+        let camera = s.app.camera().is_open().then(|| std::time::Duration::from_millis(66)).or(bench);
+        match (s.app.autosave_due_in(), camera) {
+            (Some(a), Some(c)) => Some(a.min(c)),
+            (a, c) => a.or(c),
+        }
     })
     .flatten();
     // Nothing wakes a stopped machine's shell, so the autosave pause needs a
@@ -249,8 +262,123 @@ fn refresh() {
     }
 }
 
+/// The panels follow their controllers: shown while open, closed after.
+fn refresh_panels(m: MainThreadMarker, s: &mut Shell) {
+    use crate::panels::*;
+    fn mirror<W>(slot: &mut Option<W>, open: bool, make: impl FnOnce() -> W, win: impl Fn(&W) -> Retained<objc2_app_kit::NSWindow>) -> bool {
+        match (open, slot.is_some()) {
+            (true, false) => {
+                let w = make();
+                win(&w).makeKeyAndOrderFront(None);
+                *slot = Some(w);
+                true
+            }
+            (false, true) => {
+                if let Some(w) = slot.take() {
+                    win(&w).orderOut(None);
+                }
+                false
+            }
+            (open, _) => open,
+        }
+    }
+    if mirror(&mut s.net, s.app.network().check_open(), || NetWindow::new(m), |w| w.window.clone()) {
+        let check = s.app.net_check();
+        if let Some(w) = &mut s.net {
+            w.refresh(m, check);
+        }
+    }
+    if mirror(&mut s.serial, s.app.serial().is_open(), || SerialWindow::new(m), |w| w.window.clone()) {
+        if let Some(w) = &mut s.serial {
+            w.refresh(&s.app);
+        }
+    }
+    if mirror(&mut s.camera, s.app.camera().is_open(), || CameraWindow::new(m), |w| w.window.clone()) {
+        if let Some(w) = &mut s.camera {
+            w.refresh(&s.app);
+        }
+    }
+    if let Some(w) = &mut s.prefs {
+        w.refresh(m, &s.app);
+    }
+    let running = s.app.session().is_running();
+    if let Some(w) = &mut s.bench {
+        w.refresh(running);
+    }
+}
+
+/// A panel's close button.
+pub fn panel_closed(which: crate::panels::Which) {
+    use crate::panels::Which;
+    use iris_gui_core::controller::{camera::CameraAction, network::NetworkAction, serial::SerialAction};
+    match which {
+        Which::Prefs => {
+            if let Some(w) = with(|s| s.prefs.take()).flatten() {
+                w.window.orderOut(None);
+            }
+        }
+        Which::Network => dispatch(AppAction::Network(NetworkAction::CloseCheck)),
+        Which::Serial => dispatch(AppAction::Serial(SerialAction::Close)),
+        Which::Camera => dispatch(AppAction::Camera(CameraAction::Close)),
+        Which::Bench => {
+            // A run keeps going until stopped; the window waits for it.
+            let busy = with(|s| s.bench.as_ref().is_some_and(|b| b.ctl.is_running())).unwrap_or(false);
+            if busy {
+                with(|s| s.win.toast(&t!("bench-running")));
+            } else if let Some(w) = with(|s| s.bench.take()).flatten() {
+                w.window.orderOut(None);
+            }
+        }
+    }
+}
+
+/// A control in one of the panels.
+fn panel_control(id: &str, value: iris_gui_core::controller::settings::Value) {
+    use crate::panels::id as p;
+    use iris_gui_core::controller::settings::Value;
+    use iris_gui_core::controller::{network::NetworkAction, serial::SerialAction};
+    match id {
+        p::NET_ADOPT => {
+            if let Some(cidr) = with(|s| s.net.as_ref().and_then(|w| w.adopt())).flatten() {
+                dispatch(AppAction::Network(NetworkAction::AdoptSubnet(cidr)));
+            }
+        }
+        p::NET_CLOSE => dispatch(AppAction::Network(NetworkAction::CloseCheck)),
+        p::SERIAL_INPUT => {
+            if let Value::Text(line) = value {
+                with(|s| s.serial.as_ref().map(|w| w.input.setStringValue(&crate::ui::ns(""))));
+                dispatch(AppAction::Serial(SerialAction::SendLine(line)));
+            }
+        }
+        p::SERIAL_CLEAR => dispatch(AppAction::Serial(SerialAction::Clear)),
+        p::SERIAL_CTRL_C => dispatch(AppAction::Serial(SerialAction::SendBytes(vec![3]))),
+        _ => {
+            let fx = with(|s| {
+                let running = s.app.session().is_running();
+                let w = s.bench.as_mut()?;
+                let a = w.action(id, value)?;
+                Some(w.ctl.apply(a, running))
+            })
+            .flatten();
+            if let Some(fx) = fx {
+                run_effects(fx);
+                refresh();
+            }
+        }
+    }
+}
+
 /// A settings control reported a new value.
 pub fn setting(id: String, value: iris_gui_core::controller::settings::Value) {
+    if id.starts_with("panel.") {
+        return panel_control(&id, value);
+    }
+    if id.starts_with("prefs.") {
+        if let Some(a) = iris_gui_core::controller::preferences::action_for(&id, value) {
+            dispatch(a);
+        }
+        return;
+    }
     if id.starts_with("new-machine.") {
         return new_machine_control(id, value);
     }
@@ -370,7 +498,22 @@ fn run_effects(fx: Vec<Effect>) {
         open_settings(Some(page));
     }
     for a in out.answers {
-        dispatch(AppAction::Answer(a));
+        if a.purpose().starts_with("bench.") {
+            let fx = with(|s| {
+                let running = s.app.session().is_running();
+                s.bench.as_mut().map(|w| w.ctl.apply(iris_gui_core::controller::bench::BenchAction::Answer(a), running))
+            })
+            .flatten();
+            if let Some(fx) = fx {
+                run_effects(fx);
+            }
+        } else if a.purpose() == DIAGNOSTICS {
+            if let iris_gui_core::controller::Answer::Chose { index: 1, .. } = a {
+                run_effects(vec![Effect::CopyToClipboard(iris_gui_core::controller::debug::diagnostics_text())]);
+            }
+        } else {
+            dispatch(AppAction::Answer(a));
+        }
     }
     if out.quit {
         with(|s| s.may_quit = true);
@@ -408,10 +551,16 @@ pub fn close_browser() {
     dispatch(AppAction::CloseBrowser);
 }
 
+/// The Diagnostics alert's purpose (its Copy button).
+const DIAGNOSTICS: &str = "shell.diagnostics";
+
 /// A toolbar item, menu item or button with this command id was used.
 pub fn command(id: &str) {
     if id.starts_with("browser.") {
         return browser_control(id, false);
+    }
+    if id.starts_with("panel.") {
+        return panel_control(id, iris_gui_core::controller::settings::Value::Bool(false));
     }
     let Some(routed) = with(|s| s.app.command(id)) else { return };
     run_effects(routed.effects);
@@ -456,8 +605,7 @@ pub fn select_machine(name: String) {
     dispatch(AppAction::Select(name));
 }
 
-/// The commands that only change the shell's own views. Later slices fill
-/// these in (settings sheet, browser, benchmark); for now they say so.
+/// The commands that only change the shell's own views.
 fn shell_command(c: ShellCommand) {
     match c {
         ShellCommand::ToggleLibrary => {
@@ -486,10 +634,35 @@ fn shell_command(c: ShellCommand) {
             let states = with(|s| s.app.saved_states()).unwrap_or_default();
             crate::menu::saved_states(mtm(), &states);
         }
-        ShellCommand::AppSettings
-        | ShellCommand::Benchmark
-        | ShellCommand::Diagnostics => {
-            with(|s| s.win.toast(&t!("appkit-not-yet")));
+        ShellCommand::AppSettings => {
+            let m = mtm();
+            let w = with(|s| s.prefs.get_or_insert_with(|| crate::panels::PrefsWindow::new(m)).window.clone());
+            refresh();
+            if let Some(w) = w {
+                w.makeKeyAndOrderFront(None);
+            }
+        }
+        ShellCommand::Benchmark => {
+            let m = mtm();
+            let w = with(|s| {
+                let notify: Arc<dyn iris_gui_core::controller::Notify> = s.wake.clone();
+                s.bench.get_or_insert_with(|| crate::panels::BenchWindow::new(m, notify)).window.clone()
+            });
+            refresh();
+            if let Some(w) = w {
+                w.makeKeyAndOrderFront(None);
+            }
+        }
+        ShellCommand::Diagnostics => {
+            run_effects(vec![Effect::Choose(iris_gui_core::controller::ChoiceSpec {
+                purpose: DIAGNOSTICS,
+                title: t!("app-name"),
+                message: iris_gui_core::controller::debug::diagnostics_text(),
+                choices: vec![t!("common-ok"), t!("common-copy")],
+                dismiss: 0,
+                default: Some(0),
+                destructive: Vec::new(),
+            })]);
         }
     }
 }

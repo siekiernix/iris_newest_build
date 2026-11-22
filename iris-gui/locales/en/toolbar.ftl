@@ -17,5 +17,3 @@ tb-settings = Machine settings
 tb-no-cdrom = This machine has no CD-ROM drive.
 browser-unavailable-running = Disks can be browsed while the machine is off.
 
-## Native shells, while a slice is still to come.
-appkit-not-yet = Not in this preview yet.
