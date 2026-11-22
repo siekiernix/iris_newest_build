@@ -43,7 +43,7 @@ pub struct GuiSettings {
     /// path they re-grant access to (disk image, PROM, ISO, NFS dir, …). Minted
     /// at save time and resolved at startup so user-selected files reopen across
     /// launches under the Mac App Store sandbox. Empty / unused everywhere else.
-    /// See [`crate::macos_sandbox`].
+    /// See [`crate::model::macos_sandbox`].
     #[serde(default)]
     pub bookmarks: BTreeMap<String, Vec<u8>>,
 
@@ -53,7 +53,7 @@ pub struct GuiSettings {
     /// fold temp written beside a base, AND an NFS shared subfolder under it — so
     /// the "Synchronizing disks" fold (which needs to create a sibling temp and
     /// rename over the base) works without per-file grants. Empty off the App
-    /// Store build. See [`crate::macos_sandbox`].
+    /// Store build. See [`crate::model::macos_sandbox`].
     #[serde(default)]
     pub disk_folders: Vec<String>,
 
@@ -143,7 +143,7 @@ pub fn write_nvram_mac(path: &str, mac: [u8; 6]) -> std::io::Result<bool> {
 /// env present) with the MAC zeroed. Lets a fresh install — especially the
 /// bundled `.app`, which has nothing in its working dir to migrate — boot with
 /// proper PROM env, while the auto-write fills in a per-machine MAC.
-pub const DEFAULT_NVRAM: &[u8] = include_bytes!("../assets/nvram-default.bin");
+pub const DEFAULT_NVRAM: &[u8] = include_bytes!("../../../assets/nvram-default.bin");
 
 /// Write the embedded default NVRAM to `path` if there's no (non-empty) file
 /// there yet. Returns true if it seeded one. Creates the parent dir as needed.
@@ -299,11 +299,11 @@ impl GuiSettings {
     }
 
     pub fn machine_dir(&self, name: &str) -> Result<PathBuf, String> {
-        crate::machines::directory(self.root()?, name)
+        crate::model::machines::directory(self.root()?, name)
     }
 
     pub fn machine_path(&self, name: &str) -> Result<PathBuf, String> {
-        crate::machines::config_path(self.root()?, name)
+        crate::model::machines::config_path(self.root()?, name)
     }
 
     pub fn default_nvram_path() -> String { "nvram.bin".into() }
@@ -321,7 +321,8 @@ impl GuiSettings {
         }
     }
 
-    pub(crate) fn load_in(root: PathBuf, old_cwd: &Path) -> Self {
+    /// Load from a settings root other than the user's (tests, alternate roots).
+    pub fn load_in(root: PathBuf, old_cwd: &Path) -> Self {
         let directory_error = std::fs::create_dir_all(&root).err();
         // cwd follows symlinks; use the same base for relative TOML paths.
         // Not std's canonicalize: on Windows it adds a \\?\ prefix that no
@@ -334,10 +335,10 @@ impl GuiSettings {
                     for cfg in s.machines.values_mut() { cfg.fold_deprecated(); }
                     s
                 }
-                Err(e) => Self { migration_pending: true, errors: vec![crate::machines::file_error(&path, e)], ..Default::default() },
+                Err(e) => Self { migration_pending: true, errors: vec![crate::model::machines::file_error(&path, e)], ..Default::default() },
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
-            Err(e) => Self { migration_pending: true, errors: vec![crate::machines::file_error(&path, e)], ..Default::default() },
+            Err(e) => Self { migration_pending: true, errors: vec![crate::model::machines::file_error(&path, e)], ..Default::default() },
         };
         s.root = Some(root.clone());
         if let Some(e) = directory_error {
@@ -345,7 +346,7 @@ impl GuiSettings {
             s.errors.push(t!("settings-create-error", error = e.to_string()));
         }
         // Restore access before migrating any external battery-backed files.
-        crate::macos_sandbox::restore(&s.bookmarks);
+        crate::model::macos_sandbox::restore(&s.bookmarks);
         s.ui_scale = if !s.ui_scale.is_finite() || s.ui_scale < UI_SCALE_MIN {
             UI_SCALE_DEFAULT
         } else { s.ui_scale.min(UI_SCALE_MAX) };
@@ -361,18 +362,18 @@ impl GuiSettings {
                     std::fs::copy(&path, &backup).map_err(|e| t!("settings-backup-error", error = e.to_string()))?;
                 }
                 for (old_name, cfg) in &s.machines {
-                    let name = crate::machines::legacy_name(old_name);
-                    crate::machines::migrate(&root, &name, cfg, old_cwd)?;
+                    let name = crate::model::machines::legacy_name(old_name);
+                    crate::model::machines::migrate(&root, &name, cfg, old_cwd)?;
                     if s.active_machine.as_deref() == Some(old_name) { s.active_machine = Some(name); }
                 }
                 if s.machines.is_empty() {
                     if let Some(legacy) = &s.last_config {
                         let source = old_cwd.join(legacy);
-                        let cfg = crate::machines::read(&source)?;
+                        let cfg = crate::model::machines::read(&source)?;
                         let stem = source.file_stem().and_then(|n| n.to_str()).unwrap_or("imported");
-                        let base = crate::machines::legacy_name(stem);
-                        let name = if crate::machines::config_path(&root, &base)?.exists() { base } else { s.unique_name(&base) };
-                        crate::machines::migrate(&root, &name, &cfg, old_cwd)?;
+                        let base = crate::model::machines::legacy_name(stem);
+                        let name = if crate::model::machines::config_path(&root, &base)?.exists() { base } else { s.unique_name(&base) };
+                        crate::model::machines::migrate(&root, &name, &cfg, old_cwd)?;
                         s.active_machine = Some(name);
                     }
                 }
@@ -387,7 +388,7 @@ impl GuiSettings {
                 Err(e) => { s.migration_pending = true; s.errors.push(t!("settings-migration-failed", error = e)); }
             }
         }
-        let (machines, errors) = crate::machines::discover(&root);
+        let (machines, errors) = crate::model::machines::discover(&root);
         s.machines = machines;
         s.errors.extend(errors);
         for e in &s.errors { log::error!("{e}"); }
@@ -402,7 +403,7 @@ impl GuiSettings {
 
     pub fn save_machine(&mut self, name: &str, cfg: &mut MachineConfig) -> Result<(), String> {
         self.ensure_writable()?;
-        crate::machines::save(self.root()?, name, cfg)?;
+        crate::model::machines::save(self.root()?, name, cfg)?;
         self.machines.insert(name.into(), cfg.clone());
         self.save()
     }
@@ -411,16 +412,16 @@ impl GuiSettings {
         if self.migration_pending { return Err(t!("settings-not-saved")); }
         let root = self.root()?.to_path_buf();
         let paths: Vec<String> = self.machines.iter().flat_map(|(name, cfg)| {
-            let dir = crate::machines::directory(&root, name).unwrap();
-            crate::macos_sandbox::config_paths(cfg, &dir)
+            let dir = crate::model::machines::directory(&root, name).unwrap();
+            crate::model::macos_sandbox::config_paths(cfg, &dir)
         }).collect();
-        crate::macos_sandbox::harvest(
+        crate::model::macos_sandbox::harvest(
             paths.iter().map(String::as_str).chain(self.disk_folders.iter().map(String::as_str)),
             &mut self.bookmarks,
         );
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        crate::machines::write(&root.join("gui.json"), &text)
+        crate::model::machines::write(&root.join("gui.json"), &text)
     }
 
     fn name_taken(&self, name: &str) -> bool {
@@ -447,7 +448,7 @@ fn uuid_like() -> String {
 #[cfg(test)]
 mod storage_tests {
     use super::*;
-    use crate::machines::{self, tests::TempRoot};
+    use crate::model::machines::{self, tests::TempRoot};
 
     /// A disk picked inside a machine folder saves relative. File dialogs
     /// spell paths the way the host names its folders, C:\ on Windows.

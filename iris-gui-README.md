@@ -511,33 +511,53 @@ iris/
 ├── Cargo.toml         [workspace] iris, iris-gui, iris-hostcall, iris-checks; iris-hostgl excluded
 ├── src/               iris library + CLI
 └── iris-gui/
-    ├── Cargo.toml     depends on iris with gpujit; CHD/camera built into core
+    ├── Cargo.toml     the egui app; depends on iris with gpujit and on iris-gui-core
     ├── build.rs       APP_VERSION (from RELEASE_VERSION or the crate version)
     ├── assets/        icons, default NVRAM
-    └── src/
+    ├── locales/       Fluent text catalogs, shared by every front end
+    ├── scripts/check-boundaries.sh   layer rules (see below)
+    ├── core/          iris-gui-core: the model and controllers, no UI toolkit
+    │   └── src/
+    │       ├── controller/    Controller trait, Effect, widget ids, shortcuts, icons
+    │       └── model/
+    │           ├── handle.rs          EmulatorHandle: worker thread, Cmd/Evt channels
+    │           ├── framebuffer.rs     CaptureRenderer + FrameSink (GfxDisplay → shell texture)
+    │           ├── job.rs             slow work with progress and cancel
+    │           ├── i18n.rs            the catalogs and the t! macro
+    │           ├── hardware.rs        profile families, SCSI naming, profile refit
+    │           ├── safe_stop.rs       Stop-safety evaluator
+    │           ├── settings.rs        GUI preferences, migration, NVRAM seeding and MAC helpers
+    │           ├── machines.rs        TOML folders, relative paths, discovery, and rename
+    │           ├── summary.rs         stopped-machine summary and missing-disk preflight
+    │           ├── ram.rs             RAM presets shared by menus and tabs
+    │           ├── netplan.rs         subnet math for the Networking tab
+    │           ├── netfix.rs          "check / fix guest networking" logic
+    │           ├── capture_access.rs  per-OS packet-capture permission (PCAP)
+    │           ├── macos_sandbox.rs   security-scoped bookmarks (App Store)
+    │           └── single_instance.rs previous-instance reclaim
+    └── src/           the egui shell
         ├── main.rs            App: control column, menus, modals, update loop
-        ├── handle.rs          EmulatorHandle: worker thread, Cmd/Evt channels
-        ├── framebuffer.rs     CaptureRenderer + FrameSink (GfxDisplay → egui texture)
         ├── input.rs           capture, egui → PS/2 keyboard+mouse pump
         ├── config_ui.rs       configuration tabs
+        ├── extra_ui.rs        less common settings, the complete-config editor
         ├── bench_ui.rs        Benchmark tab
         ├── scsi_menu.rs       SCSI menu (per-ID actions, disc pickers)
-        ├── safe_stop.rs       Stop-safety evaluator
-        ├── settings.rs        GUI preferences, migration, NVRAM seeding and MAC helpers
-        ├── machines.rs        TOML folders, relative paths, discovery, and rename
-        ├── ram.rs             RAM presets shared by menus and tabs
-        ├── netplan.rs         subnet math for the Networking tab
-        ├── netfix.rs          "check / fix guest networking" logic
-        ├── capture_access.rs  per-OS packet-capture permission (PCAP)
         ├── camera_test.rs     Test Camera preview
         ├── serial_console.rs  in-app ttyd1 console
         ├── filedialog.rs      where file dialogs open
-        ├── macos_sandbox.rs   security-scoped bookmarks (App Store)
-        ├── single_instance.rs previous-instance reclaim
+        ├── host.rs            host services (reveal in Finder)
         └── dialogs/
             ├── new_machine.rs Startup "New machine" dialog
             └── create_disk.rs Blank-HDD-image creator
 ```
+
+The front ends are moving onto shared controllers: `iris-gui-core` holds the
+model and one controller per task, and a shell (egui today, native AppKit
+next) only draws, turns input into controller actions and carries out the
+effects a controller asks for (file pickers, confirmations, the clipboard).
+`iris-gui/scripts/check-boundaries.sh` fails when the core names a UI toolkit
+or a controller spawns a thread, and counts what the shells still reach past
+the controllers for.
 
 ### Thread model
 
@@ -557,7 +577,7 @@ iris/
   iris's own `src/ui.rs` event loop is **not** used — iris-gui never
   calls `Ui::run`, so iris never opens its own window. The selected graphics
   board runs its display loop; iris-gui installs a custom `Renderer`
-  (`framebuffer.rs::CaptureRenderer`) through `Machine::get_display()`
+  (`model/framebuffer.rs::CaptureRenderer`) through `Machine::get_display()`
   and the `GfxDisplay` trait before the CPU starts, then uploads frames to an
   `egui::TextureHandle`.
 - Window operations (resize, fullscreen, surface creation) must run on the
@@ -603,10 +623,10 @@ a build feature — read `MachineConfig::machine.cpu`.
 ### Conventions
 
 - Every user-visible string is a Fluent message in `iris-gui/locales/<lang>/*.ftl`,
-  looked up with `t!("id")` (`src/i18n.rs`). Optional captions and tooltips go
+  looked up with `t!("id")` (`core/src/model/i18n.rs`). Optional captions and tooltips go
   through `subtitle()` and `.tip()`, which draw nothing when the catalog value
   is empty. `locales/README.md` covers the writing style and adding a language;
-  `cargo test -p iris-gui i18n` checks ids and arguments against the code.
+  `cargo test -p iris-gui-core i18n` checks ids and arguments against the code of every front end.
 - `Result<T, String>` for fallible APIs (matches in-tree iris style; no
   anyhow / thiserror).
 - `log` macros for diagnostics; the existing iris `devlog` module

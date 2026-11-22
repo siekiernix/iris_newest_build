@@ -25,7 +25,11 @@ for d in frontends/*/src; do [ -d "$d" ] && SHELLS+=("$d"); done
 ENFORCED=()
 for d in frontends/*/src; do [ -d "$d" ] && ENFORCED+=("$d"); done
 
-TOOLKITS='egui|eframe|rfd|objc2[a-z0-9_]*|gtk4?|glib|libadwaita|windows::Win32::UI'
+TOOLKITS='egui|eframe|rfd|objc2_app_kit|objc2_ui_kit|gtk4?|glib|libadwaita|windows::Win32::UI'
+# The Objective-C runtime and Foundation are platform services, not a UI
+# toolkit: the model may use them (sandbox bookmarks, the container home),
+# controllers may not.
+OBJC='objc2|objc2_foundation'
 MODEL_REF='\biris::|\biris_gui_core::model\b|\bcore::model\b'
 SPAWN='thread::spawn|thread::Builder'
 
@@ -41,6 +45,9 @@ note() {
 # --- enforced: core is toolkit-free, controllers are thread-free ---------------
 if hits=$(grep -rnE "\b($TOOLKITS)::|extern crate ($TOOLKITS)\b|use ($TOOLKITS)\b" core/src); then
   error "iris-gui/core uses toolkit code:"; echo "$hits"
+fi
+if hits=$(grep -rnE "\b($OBJC)::" core/src/controller); then
+  error "iris-gui/core/src/controller uses the Objective-C runtime:"; echo "$hits"
 fi
 if hits=$(grep -rnE "\bwinit::" core/src | grep -vE "winit::keyboard::" ); then
   error "iris-gui/core uses winit beyond its key codes:"; echo "$hits"

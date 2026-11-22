@@ -367,9 +367,11 @@ pub fn rename(root: &Path, old: &str, new: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
+/// A throwaway settings root under the system temp folder, removed on drop.
+/// For tests here and in the shells.
+#[doc(hidden)]
+pub mod testing {
+    use std::path::PathBuf;
 
     pub struct TempRoot(pub PathBuf);
     impl TempRoot {
@@ -391,6 +393,12 @@ pub(crate) mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    pub use super::testing::TempRoot;
 
     #[test]
     fn saved_toml_roundtrips_every_path_and_preserves_non_path_strings() {
@@ -677,7 +685,7 @@ pub(crate) mod tests {
         std::fs::write(&resource, b"media").unwrap();
         let mut cfg = MachineConfig::default();
         cfg.scsi.get_mut(&4).unwrap().path = "../../external.iso".into();
-        let paths = crate::macos_sandbox::config_paths(&cfg, &dir);
+        let paths = crate::model::macos_sandbox::config_paths(&cfg, &dir);
         assert!(paths.contains(&resource.to_string_lossy().into_owned()));
     }
 

@@ -155,9 +155,9 @@ mod imp {
 
     /// The daemon helper resources, baked into the binary from the repo so the
     /// flow needs no .app bundle layout at runtime.
-    const CHMODBPF_SCRIPT: &str = include_str!("../../installer/macos/chmod-bpf/ChmodBPF");
+    const CHMODBPF_SCRIPT: &str = include_str!("../../../../installer/macos/chmod-bpf/ChmodBPF");
     const CHMODBPF_PLIST: &str =
-        include_str!("../../installer/macos/chmod-bpf/io.techomancer.iris.ChmodBPF.plist");
+        include_str!("../../../../installer/macos/chmod-bpf/io.techomancer.iris.ChmodBPF.plist");
 
     const PLIST_NAME: &str = "io.techomancer.iris.ChmodBPF.plist";
     const DAEMON_PLIST: &str = "/Library/LaunchDaemons/io.techomancer.iris.ChmodBPF.plist";

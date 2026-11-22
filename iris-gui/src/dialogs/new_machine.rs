@@ -62,28 +62,7 @@ impl Default for NewMachineDialog {
     }
 }
 
-/// The name a new machine of `profile` gets until the user types one:
-/// the profile's name up to its board number (`o2`, `octane`, `indigo2`).
-pub fn default_name(profile: MachineProfile) -> &'static str {
-    let name = profile.name();
-    name.split_once('_').map_or(name, |(model, _)| model)
-}
-
-/// Fill the profile's banks largest first, without gaps.
-pub fn distribute_ram(total: u32, profile: MachineProfile) -> [u32; iris::config::MAX_BANKS] {
-    let mut remaining = total;
-    let mut banks = [0u32; iris::config::MAX_BANKS];
-    for slot in banks.iter_mut().take(profile.memory_banks()) {
-        // Pick the largest size in VALID_BANK_SIZES that is <= remaining.
-        let pick = VALID_BANK_SIZES.iter()
-            .filter(|&&s| s > 0 && s <= remaining && profile.bank_sizes().contains(&s))
-            .max().copied().unwrap_or(0);
-        *slot = pick;
-        remaining -= pick;
-        if remaining == 0 { break; }
-    }
-    banks
-}
+pub use iris_gui_core::model::hardware::{default_name, distribute_ram};
 
 impl NewMachineDialog {
     pub fn open(&mut self) { self.open = true; self.result = None; }

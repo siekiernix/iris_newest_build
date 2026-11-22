@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 
 fn pidfile_path() -> Option<PathBuf> {
-    crate::settings::GuiSettings::data_dir().map(|d| d.join("iris-gui.pid"))
+    crate::model::settings::GuiSettings::data_dir().map(|d| d.join("iris-gui.pid"))
 }
 
 /// Reclaim resources from a previous instance (if any), then claim the lock

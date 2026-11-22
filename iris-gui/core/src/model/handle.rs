@@ -1,4 +1,4 @@
-use crate::framebuffer::{new_capture_renderer, FrameSink};
+use crate::model::framebuffer::{new_capture_renderer, FrameSink};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use iris::block_node::BlockNode;
 use iris::config::{MachineConfig, PortForwardConfig};
@@ -93,7 +93,7 @@ pub struct Status {
     pub kernel_hz: f32,
     /// The CPU is not executing: either stopped (soft power-off) or idle at the
     /// PROM after an IRIX `halt` (0 MIPS). When set, the guest has shut down and
-    /// stopping the machine can't corrupt a disk — see [`crate::safe_stop`].
+    /// stopping the machine can't corrupt a disk — see [`crate::model::safe_stop`].
     pub cpu_halted: bool,
     /// The CPU thread has actually stopped — a soft power-off called
     /// `Machine::stop`. Unlike `cpu_halted` this is NOT set by mere 0-MIPS idle
@@ -526,7 +526,7 @@ fn worker_loop(
                         // Tell the NAT the host's own networks so it won't adopt a
                         // guest subnet that overlaps the host's real LAN/VPN/Docker.
                         m.set_host_nets(
-                            crate::netplan::gather_host_ifaces()
+                            crate::model::netplan::gather_host_ifaces()
                                 .into_iter().map(|h| (h.network, h.prefix)).collect());
                         *ps2_slot.lock() = Some(m.get_ps2());
                         // Latch every CPU's counters for the live MIPS and Hz estimate.

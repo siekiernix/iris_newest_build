@@ -7,7 +7,7 @@
 //!
 //! The fix is the standard one: at save time we mint a **security-scoped
 //! bookmark** for every file we can currently reach ([`harvest`]) and stash the
-//! bytes in [`GuiSettings`](crate::settings::GuiSettings). On the next launch we
+//! bytes in [`GuiSettings`](crate::model::settings::GuiSettings). On the next launch we
 //! resolve each bookmark and call `startAccessingSecurityScopedResource`
 //! ([`restore`]) before any machine can start.
 //!
@@ -28,9 +28,9 @@ use std::path::Path;
 pub fn config_paths(cfg: &MachineConfig, dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
     let mut cfg = cfg.clone();
-    crate::machines::visit_paths(&mut cfg, |p| {
+    crate::model::machines::visit_paths(&mut cfg, |p| {
         if p.is_empty() || iris::dev::prom_image::is_embedded_keyword(p) { return; }
-        let path = crate::machines::resolve(dir, p);
+        let path = crate::model::machines::resolve(dir, p);
         if path.exists() {
             // Bookmarks use a stable absolute key, independent of the selected
             // machine's cwd. Canonicalize only this key, never the TOML path.
@@ -59,27 +59,6 @@ pub fn harvest<'a>(paths: impl IntoIterator<Item = &'a str>, bookmarks: &mut BTr
 pub fn restore(bookmarks: &BTreeMap<String, Vec<u8>>) {
     for (path, bytes) in bookmarks {
         let _ = imp::start_access(path, bytes);
-    }
-}
-
-/// Reveal `path` in Finder (select it). Uses `NSWorkspace` rather than spawning
-/// `open`, so it works under the App Sandbox (which forbids launching helper
-/// processes). Best-effort; a missing path just does nothing. Available on all
-/// macOS builds (objc2 is a macOS-wide dependency, not gated on `appstore`).
-#[cfg(target_os = "macos")]
-pub fn reveal_in_finder(path: &str) {
-    use objc2::runtime::AnyObject;
-    use objc2::{class, msg_send};
-    use objc2_foundation::NSString;
-
-    let ns_path = NSString::from_str(path);
-    let root = NSString::from_str(""); // empty root → Finder picks the parent
-    // SAFETY: `+[NSWorkspace sharedWorkspace]` returns the shared singleton;
-    // `-selectFile:inFileViewerRootedAtPath:` takes two NSString* and returns
-    // BOOL. AppKit is loaded (this is a GUI app), and both strings are valid.
-    unsafe {
-        let ws: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
-        let _: bool = msg_send![ws, selectFile: &*ns_path, inFileViewerRootedAtPath: &*root];
     }
 }
 

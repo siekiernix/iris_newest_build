@@ -29,7 +29,7 @@ pub fn drives(cfg: &MachineConfig) -> Vec<Drive> {
         keys.sort_by_key(|k| cfg.scsi[k].placement(*k));
         for key in keys {
             let d = &cfg.scsi[&key];
-            let id = crate::extra_ui::scsi_name(cfg, key);
+            let id = crate::model::hardware::scsi_name(cfg, key);
             out.push(if d.is_daynaport() {
                 Drive::Daynaport { id }
             } else if d.is_cdrom() {
@@ -123,7 +123,7 @@ pub fn missing_disks(cfg: &MachineConfig, readable: impl Fn(&str) -> bool) -> Ve
         if !present {
             out.push(MissingDisk {
                 key,
-                name: crate::extra_ui::scsi_name(cfg, key),
+                name: crate::model::hardware::scsi_name(cfg, key),
                 path: dev.path.clone(),
                 cdrom: dev.is_cdrom(),
             });

@@ -783,7 +783,7 @@ Each prints its own usage with `--help` (or with no arguments).
 
 ## iris-gui persisted settings inventory
 
-Source: [iris-gui/src/settings.rs](iris-gui/src/settings.rs). These keys belong
+Source: [iris-gui/core/src/model/settings.rs](iris-gui/core/src/model/settings.rs). These keys belong
 to GUI JSON rather than machine TOML files. View controls update the scales;
 the GUI saves machine TOMLs and sandbox access state for you.
 
@@ -830,7 +830,7 @@ mistaken for GUI settings.
 | `IRIS_GPRCACHE_EVERYWHERE` | Presence caches registers in functions without a loop too. For test runs: slower to compile, no faster to run. | [src/cpu/jitv2/codegen.rs](src/cpu/jitv2/codegen.rs) |
 | `IRIS_GR2_JIT` | Starting mode of the GR2 span JIT (`gr2-jit` builds): `off` or `0`, `sync` (compile on first use and wait), `async`, `on` or `1` (the default). `gr2 jit` changes it later. | [src/dev/gr2/re3_jit/mod.rs](src/dev/gr2/re3_jit/mod.rs) |
 | `IRIS_GR4_JIT` | Starting mode of the IMPACT raster JIT (`gr4-jit` builds): `off` or `0`, `sync`, `async`, `on` or `1` (the default). `mgras jit` changes it later. | [src/dev/mgras/rss_jit/mod.rs](src/dev/mgras/rss_jit/mod.rs) |
-| `IRIS_GUI_GL` | 1 selects the GUI GL capture path. | [iris-gui/src/framebuffer.rs](iris-gui/src/framebuffer.rs) |
+| `IRIS_GUI_GL` | 1 selects the GUI GL capture path. | [iris-gui/core/src/model/framebuffer.rs](iris-gui/core/src/model/framebuffer.rs) |
 | `IRIS_HAL2_CAPTURE` | HAL2 host audio capture: a WAV of what the host device is given, at the device's rate. | [src/dev/hal2.rs](src/dev/hal2.rs) |
 | `IRIS_HOSTGL_CALLS` | Substring filter for HostGL call logging (bounded log). | [iris-hostgl/src/service.rs](iris-hostgl/src/service.rs) |
 | `IRIS_HOSTGL_INLINE` | 1 runs the HostGL service on the CPU thread instead of its own (for comparison; the CPU stalls while a buffer replays). | [iris-hostgl/src/lib.rs](iris-hostgl/src/lib.rs) |

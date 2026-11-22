@@ -1,28 +1,26 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[macro_use]
+extern crate iris_gui_core;
+
 mod i18n;
 mod bench_ui;
 mod filedialog;
 mod camera_test;
-mod capture_access;
 mod config_ui;
 mod extra_ui;
 mod dialogs;
-mod framebuffer;
-mod handle;
+mod host;
 mod input;
-mod macos_sandbox;
-mod machines;
-mod netfix;
-mod netplan;
-mod ram;
-mod safe_stop;
 mod scsi_menu;
 mod serial_console;
-mod settings;
-mod single_instance;
-mod summary;
+
+// The toolkit-free model, shared with the native shells. Bound at the crate
+// root so `crate::handle::Cmd` and friends keep their paths.
+use iris_gui_core::model::{
+    capture_access, framebuffer, handle, machines, macos_sandbox, netfix, netplan, ram, safe_stop,
+    settings, single_instance, summary,
+};
 
 use config_ui::{show_tab, ConfigAction, MemoryUiContext, Tab};
 use dialogs::create_disk::CreateDiskDialog;
@@ -236,6 +234,16 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(App::new(prefs)))
         }),
     )
+}
+
+/// The egui shell's wake: a repaint request, which eframe proxies into the
+/// event loop from any thread.
+struct EguiWake(egui::Context);
+
+impl iris_gui_core::model::job::Notify for EguiWake {
+    fn wake(&self) {
+        self.0.request_repaint();
+    }
 }
 
 struct App {
@@ -1074,8 +1082,10 @@ impl App {
     /// `App` outlives the sinks only in the other direction: the sinks are built
     /// with the worker thread, before any context exists to give them.
     fn install_frame_wake(&self, ctx: &egui::Context) {
-        self.emu.frame_sink.set_wake(ctx);
-        self.emu.frame_sink_head1.set_wake(ctx);
+        let wake: std::sync::Arc<dyn iris_gui_core::model::job::Notify> =
+            std::sync::Arc::new(EguiWake(ctx.clone()));
+        self.emu.frame_sink.set_wake(wake.clone());
+        self.emu.frame_sink_head1.set_wake(wake);
     }
 
     fn handle_events(&mut self, ctx: &egui::Context) {
@@ -4021,7 +4031,7 @@ mod machine_storage_integration {
 
     #[test]
     fn toml_machine_lifecycle_and_emulator_paths() {
-        let root = machines::tests::TempRoot::new("app-lifecycle");
+        let root = machines::testing::TempRoot::new("app-lifecycle");
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "machine_storage_integration::machine_storage_child", "--nocapture"])
             .env("IRIS_GUI_STORAGE_TEST", &root.0).current_dir(&root.0).output().unwrap();

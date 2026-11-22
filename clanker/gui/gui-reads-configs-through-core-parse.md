@@ -6,7 +6,7 @@ Status: rule, 2026-11.
 many CPUs it had, while the same file run with `iris --config` got one per CPU.
 Older `[o2]` spellings were not folded either, and `banks` read as unset.
 
-**Cause.** `iris-gui/src/machines.rs::read` parsed the file with a bare
+**Cause.** `iris-gui/core/src/model/machines.rs::read` parsed the file with a bare
 `toml::from_str`. The core's loader (`MachineConfig::parse_toml`, reached by
 `try_load`) does more after parsing: it records whether `banks` and
 `[jitv2] threads` were given (`banks_set`, `jitv2_threads_set`, both

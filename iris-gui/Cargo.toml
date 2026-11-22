@@ -54,11 +54,11 @@ assets = [
 [features]
 # Distributed build. Hides source-checkout tools such as premiere preparation.
 # Machine TOML storage is shared by source, Release, and App Store builds.
-bundled = []
+bundled = ["iris-gui-core/bundled"]
 # Mac App Store distribution build. Implies `bundled`, and additionally hides
 # the CI/Automation config tab (the iris-ci socket is a developer automation
 # feature unusable in the sandbox). Set by .github/workflows/appstore.yml.
-appstore = ["bundled"]
+appstore = ["bundled", "iris-gui-core/appstore"]
 # PCAP bridged networking. Off by default because it adds a hard build-time
 # dependency on a pcap library (libpcap headers on Unix, a WinPcap-compatible
 # `wpcap` SDK on Windows). When enabled, the Network tab can enumerate host
@@ -85,7 +85,7 @@ perfetto = ["iris/perfetto"]
 # Opt-in Newport framebuffer damage tracking and partial GL uploads.
 rex-dirty-upload = ["iris/rex-dirty-upload"]
 # Experimental GPU-authoritative raster backends in the embedded core.
-wgpu = ["iris/wgpu"]
+wgpu = ["iris/wgpu", "iris-gui-core/wgpu"]
 
 [dependencies]
 # The GUI always enables the graphics JITs (`gpujit`: REX3 draw shaders and
@@ -98,7 +98,6 @@ iris = { path = "..", features = ["gpujit"] }
 iris-gui-core = { path = "core" }
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = "0.36"
-crossbeam-channel = "0.5"
 parking_lot = "0.12"
 # Match iris's winit version — Ps2Controller::push_kb takes
 # winit::keyboard::KeyCode.
@@ -111,22 +110,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
 dirs = "6"
-# fs::canonicalize without the \\?\ prefix Windows file dialogs never use.
-dunce = "1"
 log = "0.4"
 env_logger = "0.11"
-# Read the host's own interface addresses (Networking tab: first-free subnet
-# presets + overlap warnings). Reads addresses via getifaddrs — no entitlement,
-# and it does not trigger the macOS 15 Local Network prompt (that's for talking
-# *to* LAN peers, not enumerating your own NICs).
-if-addrs = "0.15"
-# GUI text catalogs (locales/<language>/*.ftl, see src/i18n.rs). Fluent handles
-# plurals and argument formatting per language; sys-locale picks the system
-# language when the user hasn't chosen one.
-fluent-bundle = "0.16"
-fluent-syntax = "0.12"
-unic-langid = "0.9"
-sys-locale = "0.3"
 
 # macOS App Sandbox: NSURL security-scoped bookmarks let the App Store build
 # reopen user-selected disk images / PROMs / ISOs across launches. These crates

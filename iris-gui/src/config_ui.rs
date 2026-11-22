@@ -2226,8 +2226,8 @@ pub(crate) enum Pick {
 pub fn reveal_in_file_manager(path: &str) {
     #[cfg(target_os = "macos")]
     {
-        // NSWorkspace, not `open` — sandbox-safe (see macos_sandbox::reveal_in_finder).
-        crate::macos_sandbox::reveal_in_finder(&crate::abs_path(path));
+        // NSWorkspace, not `open` — sandbox-safe (see host::reveal_in_finder).
+        crate::host::reveal_in_finder(&crate::abs_path(path));
     }
     #[cfg(target_os = "windows")]
     {

@@ -10,7 +10,7 @@ subtitle(ui, t!("config-cpu-subtitle"));            // hidden when empty
 ui.button(t!("common-browse")).tip(t!("config-prom-browse-tip"));
 ```
 
-`t!` is defined in `src/i18n.rs`, along with `subtitle` and `ResponseExt::tip`.
+`t!` is defined in `core/src/model/i18n.rs`; the egui helpers `subtitle` and `ResponseExt::tip` are in `src/i18n.rs`.
 
 ## Editing English text
 

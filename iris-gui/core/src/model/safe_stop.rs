@@ -1,4 +1,4 @@
-use crate::handle::Status;
+use crate::model::handle::Status;
 use iris::config::MachineConfig;
 
 /// Reasons it is risky to force-stop right now.
@@ -51,7 +51,7 @@ pub fn evaluate(status: &Status, cfg: &MachineConfig) -> UnsafeReasons {
             .collect::<std::collections::BTreeMap<_, _>>()
             .into_values()
             .collect();
-        r.writable_disks.extend(keys.drain(..).map(|k| t!("safestop-scsi-disk", id = crate::extra_ui::scsi_name(cfg, k))));
+        r.writable_disks.extend(keys.drain(..).map(|k| t!("safestop-scsi-disk", id = crate::model::hardware::scsi_name(cfg, k))));
     }
     if let Some(fc) = &cfg.fibre_channel {
         for (id, disk) in &fc.disks {

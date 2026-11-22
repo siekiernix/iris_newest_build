@@ -1,5 +1,6 @@
-//! Headless renderer that captures the composited REX3 framebuffer into a
-//! shared buffer pool for egui to upload as a texture each frame.
+//! Headless renderer that captures the composited framebuffer into a shared
+//! buffer pool for the shell to upload as a texture (egui) or a Metal texture
+//! (AppKit) each frame.
 //!
 //! Default path: `CaptureRenderer` (CPU `SwCompositor`).
 //! Set `IRIS_GUI_GL=1` for GPU `GlCompositor` + readback (faster for GL demos).
@@ -17,8 +18,8 @@
 //! ## Wake-ups
 //!
 //! Without a wake the GUI would have to poll for new frames. [`FrameSink::set_wake`]
-//! installs an `egui::Context` that every publish calls `request_repaint()` on;
-//! eframe proxies that call into the winit event loop, so the GUI sleeps until a
+//! installs a [`Notify`] that every publish wakes (egui requests a repaint, which
+//! eframe proxies into the winit event loop), so the GUI sleeps until a
 //! frame actually exists instead of running 60 layout+paint passes a second over
 //! an unchanging screen. On a two-core host that is most of a core back.
 //!
@@ -51,6 +52,7 @@ use iris::disp::{Rex3Screen, FB_STRIDE};
 use iris::gl_compositor::GlCompositor;
 use iris::headless_gl::HeadlessGl;
 use iris::dev::ng1::rex3::Renderer;
+use crate::model::job::Notify;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -93,9 +95,9 @@ struct Pool {
 struct FrameSinkInner {
     pool: Mutex<Pool>,
     seq: AtomicU64,
-    /// egui context to wake when a frame lands. Installed once the `App` exists
-    /// (the sink outlives it, being created with the worker thread).
-    wake: Mutex<Option<egui::Context>>,
+    /// What to wake when a frame lands. Installed once the shell exists (the
+    /// sink outlives it, being created with the worker thread).
+    wake: Mutex<Option<Arc<dyn Notify>>>,
 }
 
 /// Shared latest-frame slot. The renderer publishes; the GUI takes.
@@ -121,10 +123,10 @@ impl FrameSink {
 
     pub fn seq(&self) -> u64 { self.inner.seq.load(Ordering::Acquire) }
 
-    /// Install the context every publish wakes. Called once, from the GUI
-    /// thread, as soon as the `App` has a context to give. Cheap to call again.
-    pub fn set_wake(&self, ctx: &egui::Context) {
-        *self.inner.wake.lock() = Some(ctx.clone());
+    /// Install what every publish wakes. Called once, from the GUI thread, as
+    /// soon as the shell has a wake to give. Cheap to call again.
+    pub fn set_wake(&self, wake: Arc<dyn Notify>) {
+        *self.inner.wake.lock() = Some(wake);
     }
 
     /// Take the published frame, leaving the sink empty until the next publish.
@@ -186,10 +188,10 @@ impl FrameSink {
             pool.published = Some(frame);
         }
         self.inner.seq.store(seq, Ordering::Release);
-        // Wake the GUI: it is asleep until a frame exists. eframe forwards this
-        // into the event loop, so it is safe (and cheap) from this thread.
-        if let Some(ctx) = self.inner.wake.lock().clone() {
-            ctx.request_repaint();
+        // Wake the GUI: it is asleep until a frame exists. Every shell's wake
+        // is safe (and cheap) to call from this thread.
+        if let Some(wake) = self.inner.wake.lock().clone() {
+            wake.wake();
         }
         true
     }

@@ -10,5 +10,7 @@
 //! - views: the egui app (`iris-gui/src`) and the native shells
 //!   (`iris-gui/frontends/*`). They import only [`controller`].
 
-pub mod controller;
+// First, so the `t!` macro reaches the controllers.
+#[macro_use]
 pub mod model;
+pub mod controller;
