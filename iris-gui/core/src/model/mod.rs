@@ -17,6 +17,7 @@ pub mod netfix;
 pub mod netplan;
 pub mod ram;
 pub mod safe_stop;
+pub mod serial_console;
 pub mod settings;
 pub mod single_instance;
 pub mod summary;

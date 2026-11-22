@@ -64,6 +64,8 @@ pub enum AppAction {
     Flush,
     /// The user asked to quit (window close, menu, Cmd+Q).
     RequestQuit,
+    /// The serial console window.
+    Serial(super::serial::SerialAction),
     /// A settings edit on the selected machine.
     Settings(super::settings::SettingsAction),
     /// A display action: capture, keys and pointer, full screen, scaling.
@@ -115,6 +117,7 @@ pub struct AppController {
     session: SessionController,
     display: super::display::DisplayController,
     settings: super::settings::SettingsController,
+    serial: super::serial::SerialConsoleController,
     notify: Arc<dyn Notify>,
     /// Problems found the last time the library was checked, by machine.
     problems: std::collections::BTreeMap<String, String>,
@@ -164,6 +167,7 @@ impl AppController {
             session: SessionController::spawn(notify.clone()),
             display: Default::default(),
             settings: Default::default(),
+            serial: Default::default(),
             notify,
             problems: Default::default(),
             pending_machine: None,
@@ -221,6 +225,10 @@ impl AppController {
 
     pub fn session_mut(&mut self) -> &mut SessionController {
         &mut self.session
+    }
+
+    pub fn serial(&self) -> &super::serial::SerialConsoleController {
+        &self.serial
     }
 
     /// The selected machine's settings, as sections of fields.
@@ -759,6 +767,7 @@ impl Controller for AppController {
             }
             AppAction::RequestQuit => self.request_quit(&mut fx),
             AppAction::Session(a) => self.session_apply(a, &mut fx),
+            AppAction::Serial(a) => self.serial.apply(a, &self.cfg, self.notify.clone()),
             AppAction::Settings(a) => {
                 use super::settings::{SettingsAction, SettingsController};
                 let live = match &a {
@@ -814,6 +823,9 @@ impl Controller for AppController {
         }
         let ps2 = self.session.ps2();
         self.display.tick(ps2.as_deref().map(|p| p as &dyn super::display::GuestInput));
+        if events.contains(&SessionEvent::Started) {
+            self.serial.reconnect(&self.cfg, self.notify.clone());
+        }
         self.session_events.extend(events);
         if self.dirty_since.is_some_and(|t| t.elapsed() >= AUTOSAVE_AFTER) {
             self.flush(&mut fx);

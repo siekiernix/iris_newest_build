@@ -28,3 +28,5 @@ status-chd-sync-pending = Changes are merged into the disk image when the machin
 status-net-guest-ip = Guest address: { $ip }
 status-audio-tip = Audio
 status-audio-playing-tip = Audio: playing
+status-serial-tip = Serial console
+status-serial-connected-tip = Serial console: connected

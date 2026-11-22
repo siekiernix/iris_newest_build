@@ -14,13 +14,12 @@ mod effects;
 mod host;
 mod input;
 mod scsi_menu;
-mod serial_console;
 
 // The toolkit-free model, shared with the native shells. Bound at the crate
 // root so `crate::handle::Cmd` and friends keep their paths.
 use iris_gui_core::model::{
     capture_access, framebuffer, handle, machines, netfix, netplan, ram,
-    settings, single_instance, summary,
+    serial_console, settings, single_instance, summary,
 };
 
 use config_ui::{show_tab, ConfigAction, MemoryUiContext, Tab};
@@ -32,6 +31,7 @@ use egui::{Color32, RichText, ViewportCommand};
 use handle::{Cmd, NetState};
 use iris_gui_core::controller::app::{AppAction, AppController};
 use iris_gui_core::controller::display::DisplayAction;
+use iris_gui_core::controller::serial::SerialAction;
 use iris_gui_core::controller::session::{SessionAction, SessionEvent};
 use iris_gui_core::controller::{Controller, Enabled};
 use settings::{GuiSettings, UI_SCALE_MAX, UI_SCALE_MIN, WINDOW_DEFAULT_SIZE};
@@ -323,9 +323,6 @@ struct App {
     /// egui texture for the camera-test preview + the last frame seq uploaded.
     camera_test_tex: Option<egui::TextureHandle>,
     camera_test_seq: u64,
-    /// Active in-app IRIX serial-console viewer (None when closed). Connects to
-    /// the loopback serial server; dropping it closes the connection.
-    serial_console: Option<serial_console::SerialConsole>,
     /// Pending line typed into the serial console input field.
     serial_input: String,
     /// Whether the "How camera & networking work" Help window is open.
@@ -419,7 +416,6 @@ impl App {
             camera_test: None,
             camera_test_tex: None,
             camera_test_seq: 0,
-            serial_console: None,
             serial_input: String::new(),
             show_help_info: false,
             show_nfs_help: false,
@@ -658,9 +654,7 @@ impl App {
                     self.fb_took_frame = false;
                     // Stop drops the machine and its serial listener; reconnect the
                     // in-app viewer so it attaches to the new VM, not a dead socket.
-                    if self.serial_console.is_some() {
-                        self.open_serial_console();
-                    }
+                    // An open serial console reconnects itself (the app controller).
                 }
                 SessionEvent::Stopped | SessionEvent::Halted | SessionEvent::PoweredOff | SessionEvent::SyncDone => {}
             }
@@ -2118,18 +2112,14 @@ impl App {
     /// Open (or reconnect) the in-app IRIX serial-console viewer. Connects to
     /// the loopback serial server the running emulator exposes.
     fn open_serial_console(&mut self) {
-        self.serial_console = Some(serial_console::SerialConsole::connect(serial_console::console_port(&self.app.config())));
+        self.run_app(AppAction::Serial(SerialAction::Open));
     }
 
     /// Draw the selected platform's in-app serial-console window.
     fn serial_console_window(&mut self, ctx: &egui::Context) {
-        let Some(console) = &self.serial_console else { return };
-        let (text, connected, error, _seq) = console.snapshot();
-
+        let Some(view) = self.app.serial().view() else { return };
         let mut open = true;
-        let mut close_now = false;
-        let mut clear_now = false;
-        let mut to_send: Option<String> = None;
+        let mut actions = Vec::new();
         egui::Window::new(t!("window-serial-title"))
             .open(&mut open)
             .default_width(620.0)
@@ -2137,30 +2127,23 @@ impl App {
             .resizable(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if let Some(e) = &error {
-                        ui.colored_label(Color32::from_rgb(200, 80, 80), e);
-                    } else if connected {
-                        ui.colored_label(Color32::from_rgb(90, 170, 90),
-                            t!("window-serial-connected", addr = console.addr().to_string()));
+                    let color = if view.error {
+                        Color32::from_rgb(200, 80, 80)
+                    } else if view.connected {
+                        Color32::from_rgb(90, 170, 90)
                     } else {
-                        ui.label(t!("window-serial-disconnected"));
-                    }
+                        ui.visuals().text_color()
+                    };
+                    ui.colored_label(color, &view.status);
                 });
                 ui.separator();
-
                 egui::ScrollArea::vertical()
                     .stick_to_bottom(true)
                     .auto_shrink([false, false])
                     .max_height(320.0)
                     .show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&text).monospace().size(12.0),
-                            )
-                            .wrap(),
-                        );
+                        ui.add(egui::Label::new(RichText::new(&view.text).monospace().size(12.0)).wrap());
                     });
-
                 ui.separator();
                 ui.horizontal(|ui| {
                     let resp = ui.add(
@@ -2169,32 +2152,23 @@ impl App {
                             .desired_width(420.0),
                     );
                     let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (ui.button(t!("window-serial-send")).clicked() || entered) && connected {
-                        to_send = Some(std::mem::take(&mut self.serial_input));
+                    if (ui.button(t!("window-serial-send")).clicked() || entered) && view.connected {
+                        actions.push(SerialAction::SendLine(std::mem::take(&mut self.serial_input)));
                         resp.request_focus();
                     }
                     if ui.button(t!("window-serial-clear")).clicked() {
-                        clear_now = true;
+                        actions.push(SerialAction::Clear);
                     }
                     if ui.button(t!("common-close")).clicked() {
-                        close_now = true;
+                        actions.push(SerialAction::Close);
                     }
                 });
             });
-
-        if let Some(line) = to_send {
-            let mut bytes = line.into_bytes();
-            bytes.push(b'\n');
-            console.send(&bytes);
+        if !open {
+            actions.push(SerialAction::Close);
         }
-        if clear_now {
-            console.clear();
-        }
-        if !open || close_now {
-            self.serial_console = None;
-        } else if connected {
-            // Poll for new console output even when egui is otherwise idle.
-            ctx.request_repaint_after(std::time::Duration::from_millis(80));
+        for a in actions {
+            self.run_app(AppAction::Serial(a));
         }
     }
 

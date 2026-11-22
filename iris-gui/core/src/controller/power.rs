@@ -29,7 +29,10 @@ impl AppController {
 
     /// The status bar for the selected machine.
     pub fn status_bar(&self) -> session::StatusBar {
-        self.session().status_bar(self.config(), self.is_dirty())
+        let mut bar = self.session().status_bar(self.config(), self.is_dirty());
+        let live = matches!(bar.run_state, session::RunState::Running | session::RunState::Halted);
+        bar.lights.push(self.serial().light(live));
+        bar
     }
 
     pub(crate) fn session_apply(&mut self, action: SessionAction, fx: &mut Vec<Effect>) {

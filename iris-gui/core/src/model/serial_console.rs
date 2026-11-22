@@ -24,7 +24,7 @@ pub fn console_port(cfg: &iris::config::MachineConfig) -> u16 {
     use iris::config::*;
     let [a, b] = cfg.serial_ports();
     match cfg.machine.profile {
-        p if crate::extra_ui::mc_machine(p) => b,
+        p if crate::model::hardware::mc_machine(p) => b,
         MachineProfile::FuelIp34 => match cfg.fuel.console {
             Ip35Console::L1 => cfg.fuel.l1_port.unwrap_or(8882),
             Ip35Console::Ioc3A => a,
@@ -61,7 +61,7 @@ mod routing_tests {
         cfg.serial_port_b = Some(18881);
         for p in MachineProfile::EVERY {
             cfg.machine.profile = p;
-            let expected = if crate::extra_ui::mc_machine(p) { 18881 }
+            let expected = if crate::model::hardware::mc_machine(p) { 18881 }
                 else if p.is_ip35_bricks() || matches!(p, MachineProfile::FuelIp34 | MachineProfile::TezroIp53) { 8882 }
                 else { 18880 };
             assert_eq!(console_port(&cfg), expected, "{p:?}");
@@ -106,7 +106,7 @@ pub struct SerialConsole {
 
 impl SerialConsole {
     /// Connect to the loopback console listener on `port` and start streaming.
-    pub fn connect(port: u16) -> Self {
+    pub fn connect(port: u16, notify: Arc<dyn crate::model::job::Notify>) -> Self {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let shared = Arc::new(Mutex::new(Shared::default()));
         let running = Arc::new(AtomicBool::new(true));
@@ -114,7 +114,7 @@ impl SerialConsole {
         let (s2, r2, w2) = (shared.clone(), running.clone(), write.clone());
         let worker = std::thread::Builder::new()
             .name("iris-gui-serial".into())
-            .spawn(move || run(addr, s2, r2, w2))
+            .spawn(move || run(addr, s2, r2, w2, notify))
             .expect("spawn serial-console worker");
         Self { shared, running, write, worker: Some(worker), addr }
     }
@@ -162,7 +162,13 @@ impl Drop for SerialConsole {
     }
 }
 
-fn run(addr: SocketAddr, shared: Arc<Mutex<Shared>>, running: Arc<AtomicBool>, write: Arc<Mutex<Option<TcpStream>>>) {
+fn run(
+    addr: SocketAddr,
+    shared: Arc<Mutex<Shared>>,
+    running: Arc<AtomicBool>,
+    write: Arc<Mutex<Option<TcpStream>>>,
+    notify: Arc<dyn crate::model::job::Notify>,
+) {
     let stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(800)) {
         Ok(s) => s,
         Err(e) => {
@@ -213,6 +219,7 @@ fn run(addr: SocketAddr, shared: Arc<Mutex<Shared>>, running: Arc<AtomicBool>, w
                 }
                 if !data.is_empty() {
                     append_text(&shared, &data);
+                    notify.wake();
                 }
             }
             Err(ref e)

@@ -27,6 +27,7 @@ pub mod keys;
 pub mod labels;
 mod power;
 pub mod profile;
+pub mod serial;
 pub mod session;
 pub mod settings;
 
