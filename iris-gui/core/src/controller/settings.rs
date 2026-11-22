@@ -155,6 +155,98 @@ pub enum SettingsAction {
 
 pub(crate) const PICK: &str = "settings.pick";
 
+/// The parts of a table row a control can be.
+pub mod part {
+    pub const KIND: &str = "kind";
+    pub const PATH: &str = "path";
+    pub const PICK: &str = "pick";
+    pub const OVERLAY: &str = "overlay";
+    pub const REMOVE: &str = "remove";
+    pub const TCP: &str = "tcp";
+    pub const HOST: &str = "host";
+    pub const GUEST: &str = "guest";
+    pub const ANY: &str = "any";
+    pub const ADD_DISK: &str = "add-disk";
+    pub const ADD_CDROM: &str = "add-cdrom";
+    pub const ADD: &str = "add";
+    pub const BROWSE: &str = "browse";
+    pub const APPLY: &str = "apply";
+}
+
+/// The id a shell gives a control: the field, then for a table the row and
+/// the part (`settings.disks.table/3/path`), for a bank grid the bank.
+pub fn control_id(field: &str, row: Option<usize>, part: Option<&str>) -> String {
+    match (row, part) {
+        (Some(r), Some(p)) => format!("{field}/{r}/{p}"),
+        (None, Some(p)) => format!("{field}//{p}"),
+        (Some(r), None) => format!("{field}/{r}"),
+        (None, None) => field.to_string(),
+    }
+}
+
+/// The disk kinds a disk row's popup offers, in order.
+pub const DISK_KINDS: [ScsiKind; 3] = [ScsiKind::Disk, ScsiKind::Cdrom, ScsiKind::Daynaport];
+
+/// The popup's labels for [`DISK_KINDS`], in the same order.
+pub fn disk_kind_labels() -> Vec<String> {
+    vec![t!("settings-kind-disk"), t!("settings-kind-cdrom"), t!("settings-kind-daynaport")]
+}
+
+/// The popup index of a disk row's kind.
+pub fn disk_kind_index(row: &DiskRow) -> usize {
+    DISK_KINDS.iter().position(|k| *k == row.kind).unwrap_or(0)
+}
+
+/// The settings action a control with `id` means, given its new `value`, and
+/// for table rows the row data the sections listed (`rows` for disks: keys in
+/// order; `forwards`: the current rows).
+pub fn action_for(id: &str, value: Value, disk_keys: &[u8], forwards: &[ForwardRow]) -> Option<SettingsAction> {
+    let mut it = id.splitn(3, '/');
+    let f = it.next()?;
+    let row: Option<usize> = it.next().and_then(|r| r.parse().ok());
+    let p = it.next();
+    let field = [
+        field::PROFILE, field::CPU, field::CPUS, field::PROM, field::BUILTIN_PROM, field::NVRAM, field::NVEEPROM,
+        field::BANKS, field::BOARD, field::HEADS, field::RESOLUTION, field::DISKS, field::NET_MODE, field::NAT_SUBNET,
+        field::PCAP_INTERFACE, field::FORWARDS, field::TOML,
+    ]
+    .into_iter()
+    .find(|x| *x == f)?;
+    Some(match (field, row, p, value) {
+        (field::BANKS, Some(i), None, Value::Number(mb)) => SettingsAction::Bank { index: i, size: mb as u32 },
+        (field::DISKS, None, Some(part::ADD_DISK), _) => SettingsAction::Disk(DiskEdit::Add(ScsiKind::Disk)),
+        (field::DISKS, None, Some(part::ADD_CDROM), _) => SettingsAction::Disk(DiskEdit::Add(ScsiKind::Cdrom)),
+        (field::DISKS, Some(r), Some(p), v) => {
+            let key = *disk_keys.get(r)?;
+            SettingsAction::Disk(match (p, v) {
+                (part::KIND, Value::Index(i)) => DiskEdit::SetKind { key, kind: *DISK_KINDS.get(i)? },
+                (part::PATH, Value::Text(path)) => DiskEdit::SetPath { key, path },
+                (part::PICK, _) => DiskEdit::Pick(key),
+                (part::OVERLAY, Value::Bool(on)) => DiskEdit::SetOverlay { key, on },
+                (part::REMOVE, _) => DiskEdit::Remove(key),
+                _ => return None,
+            })
+        }
+        (field::FORWARDS, None, Some(part::ADD), _) => SettingsAction::Forward(ForwardEdit::Add),
+        (field::FORWARDS, Some(r), Some(part::REMOVE), _) => SettingsAction::Forward(ForwardEdit::Remove(r)),
+        (field::FORWARDS, Some(r), Some(p), v) => {
+            let mut row = forwards.get(r)?.clone();
+            match (p, v) {
+                (part::TCP, Value::Index(i)) => row.tcp = i == 0,
+                (part::HOST, Value::Text(t)) => row.host_port = t.trim().parse().ok()?,
+                (part::GUEST, Value::Text(t)) => row.guest_port = t.trim().parse().ok()?,
+                (part::ANY, Value::Bool(b)) => row.any_interface = b,
+                _ => return None,
+            }
+            SettingsAction::Forward(ForwardEdit::Set(r, row))
+        }
+        (field::TOML, None, Some(part::APPLY), Value::Text(t)) => SettingsAction::ApplyToml(t),
+        (f, None, Some(part::BROWSE), _) => SettingsAction::Pick(f),
+        (f, None, None, v) => SettingsAction::Set { field: f, value: v },
+        _ => return None,
+    })
+}
+
 /// Remembers which field a picker is for.
 #[derive(Debug, Default)]
 pub struct SettingsController {
@@ -267,7 +359,9 @@ impl SettingsController {
             fields: vec![Field {
                 id: field::BANKS,
                 label: t!("settings-memory-banks"),
-                help: Some(crate::model::ram::bank_size_tip(p)),
+                // The popups list only the sizes this machine takes; Octane and O2
+                // also have rules about which sizes go together.
+                help: matches!(p, MachineProfile::OctaneIp30 | MachineProfile::O2Ip32).then(|| crate::model::ram::bank_size_tip(p)),
                 kind: FieldKind::BankGrid {
                     banks,
                     sizes: VALID_BANK_SIZES.iter().copied().filter(|s| *s == 0 || p.bank_sizes().contains(s)).collect(),
@@ -775,6 +869,25 @@ mod tests {
         let s = c.sections(&cfg, false);
         let adv = section(&s, "settings.advanced");
         assert!(adv.fields.iter().any(|f| matches!(f.kind, FieldKind::Note(Severity::Error, _))));
+    }
+
+    #[test]
+    fn control_ids_become_actions() {
+        let fw = vec![ForwardRow { tcp: true, host_port: 2222, guest_port: 22, any_interface: false }];
+        assert_eq!(
+            action_for(&control_id(field::DISKS, Some(0), Some(part::PATH)), Value::Text("a.img".into()), &[4], &fw),
+            Some(SettingsAction::Disk(DiskEdit::SetPath { key: 4, path: "a.img".into() }))
+        );
+        assert_eq!(
+            action_for(&control_id(field::FORWARDS, Some(0), Some(part::HOST)), Value::Text("2323".into()), &[], &fw),
+            Some(SettingsAction::Forward(ForwardEdit::Set(0, ForwardRow { host_port: 2323, ..fw[0].clone() })))
+        );
+        assert_eq!(
+            action_for(field::PROFILE, Value::Index(3), &[], &fw),
+            Some(SettingsAction::Set { field: field::PROFILE, value: Value::Index(3) })
+        );
+        assert_eq!(action_for(&control_id(field::PROM, None, Some(part::BROWSE)), Value::Bool(true), &[], &fw), Some(SettingsAction::Pick(field::PROM)));
+        assert_eq!(action_for("nonsense", Value::Bool(true), &[], &fw), None);
     }
 
     #[test]

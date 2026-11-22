@@ -32,6 +32,20 @@ define_class!(
             }
         }
 
+        /// A settings control changed (see `settings.rs`).
+        #[unsafe(method(setting:))]
+        fn setting(&self, sender: Option<&AnyObject>) {
+            if let Some((id, value)) = sender.and_then(crate::settings::value_of) {
+                crate::app::setting(id, value);
+            }
+        }
+
+        /// A timed tick (the autosave pause).
+        #[unsafe(method(tickNow:))]
+        fn tick_now(&self, _sender: Option<&AnyObject>) {
+            crate::app::tick();
+        }
+
         /// One step of `IRIS_APPKIT_SCRIPT` (see `app::script`).
         #[unsafe(method(scriptStep:))]
         fn script_step(&self, _sender: Option<&AnyObject>) {

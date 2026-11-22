@@ -383,6 +383,7 @@ Host GL pass-through for guest GL programs (`iris-hostgl`).
 |---|---|---|
 | [01-overview.md](gui/01-overview.md) | design | iris-gui — overview |
 | [debug-builds-never-start-the-cpu.md](gui/debug-builds-never-start-the-cpu.md) | rule | Debug front-end builds park the CPU at reset; `start` on the monitor |
+| [a-sleeping-shell-needs-a-timed-tick-for-autosave.md](gui/a-sleeping-shell-needs-a-timed-tick-for-autosave.md) | rule | Shells that tick only on wakes must schedule a tick at `autosave_due_in()` |
 | [disk-browser-xfs-log-replay.md](gui/disk-browser-xfs-log-replay.md) | rule | Disk browser: XFS opens read-only until Edit Anyway; fs-xfs 0.2 cannot see an unreplayed log |
 | [disk-core-create-modes-carry-the-file-type.md](gui/disk-core-create-modes-carry-the-file-type.md) | rule | Disk browser: `create_file`/`create_directory` modes must include S_IFREG/S_IFDIR |
 | [cdrom-hot-insert-remount.md](gui/cdrom-hot-insert-remount.md) | rule | GUI CD-ROM insert must hot-load + remount /CDROM |

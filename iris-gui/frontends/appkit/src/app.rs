@@ -27,6 +27,7 @@ struct Shell {
     wake: Arc<MacWake>,
     /// The controller agreed to quit: let the next terminate through.
     may_quit: bool,
+    settings: Option<crate::settings::SettingsWindow>,
 }
 
 thread_local! {
@@ -111,12 +112,13 @@ fn start(mtm: MainThreadMarker) {
     head1.set_wake(wake.clone());
     win.window.makeKeyAndOrderFront(None);
     let empty = app.is_empty();
-    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false }));
+    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None }));
     NSApplication::sharedApplication(mtm).activate();
     refresh();
     tick();
     // A test script: command ids, separated by `;`, one every few seconds
-    // (`IRIS_APPKIT_SCRIPT_DELAY`, default 3). "select:NAME" selects a machine.
+    // (`IRIS_APPKIT_SCRIPT_DELAY`, default 3). "select:NAME" selects a machine,
+    // "page:ID" shows a settings section, "set:ID=VALUE" reports a settings control.
     if let Ok(script) = std::env::var("IRIS_APPKIT_SCRIPT") {
         SCRIPT.with(|q| q.borrow_mut().extend(script.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty())));
         schedule_script_step();
@@ -151,9 +153,25 @@ fn schedule_script_step() {
 pub fn script_step() {
     let Some(step) = SCRIPT.with(|q| q.borrow_mut().pop_front()) else { return };
     eprintln!("iris-appkit script: {step}");
-    match step.strip_prefix("select:") {
-        Some(name) => select_machine(name.to_string()),
-        None => command(&step),
+    if let Some(name) = step.strip_prefix("select:") {
+        select_machine(name.to_string());
+    } else if let Some((id, v)) = step.strip_prefix("set:").and_then(|s| s.split_once('=')) {
+        // set:ID=i:N | b:0/1 | t:TEXT | n:NUMBER, as the control with ID would report.
+        use iris_gui_core::controller::settings::Value;
+        let value = match v.split_once(':') {
+            Some(("i", n)) => n.parse().ok().map(Value::Index),
+            Some(("b", b)) => Some(Value::Bool(b == "1")),
+            Some(("t", t)) => Some(Value::Text(t.to_string())),
+            Some(("n", n)) => n.parse().ok().map(Value::Number),
+            _ => None,
+        };
+        if let Some(value) = value {
+            setting(id.to_string(), value);
+        }
+    } else if let Some(page) = step.strip_prefix("page:") {
+        setting(format!("settings-page:{page}"), iris_gui_core::controller::settings::Value::Bool(true));
+    } else {
+        command(&step);
     }
     schedule_script_step();
 }
@@ -189,7 +207,63 @@ pub fn tick() {
 
 fn refresh() {
     let m = mtm();
-    with(|s| s.win.refresh(m, &s.app));
+    let due = with(|s| {
+        s.win.refresh(m, &s.app);
+        if let Some(w) = &mut s.settings {
+            w.refresh(m, &s.app);
+        }
+        s.app.autosave_due_in()
+    })
+    .flatten();
+    // Nothing wakes a stopped machine's shell, so the autosave pause needs a
+    // tick of its own. Each edit asks again; a tick before it is due is harmless.
+    if let Some(d) = due {
+        let t = crate::ui::target(m);
+        // SAFETY: the target is never dropped; the selector takes one object argument.
+        unsafe {
+            let _: () = objc2::msg_send![&*t, performSelector: objc2::sel!(tickNow:), withObject: std::ptr::null::<objc2::runtime::AnyObject>(), afterDelay: d.as_secs_f64() + 0.05];
+        }
+    }
+}
+
+/// A settings control reported a new value.
+pub fn setting(id: String, value: iris_gui_core::controller::settings::Value) {
+    enum Then {
+        Page,
+        Act(iris_gui_core::controller::settings::SettingsAction),
+    }
+    let then = with(|s| {
+        let w = s.settings.as_mut()?;
+        if let Some(page) = w.page_for(&id) {
+            w.show_page(page);
+            return Some(Then::Page);
+        }
+        w.action(&id, value).map(Then::Act)
+    })
+    .flatten();
+    match then {
+        Some(Then::Page) => refresh(),
+        Some(Then::Act(a)) => dispatch(AppAction::Settings(a)),
+        None => {}
+    }
+}
+
+/// Open the settings window at `page` (a section id), or bring it forward.
+fn open_settings(page: Option<&'static str>) {
+    let m = mtm();
+    let w = with(|s| {
+        let w = s.settings.get_or_insert_with(|| {
+            crate::settings::SettingsWindow::new(m, page.unwrap_or(iris_gui_core::controller::ids::settings::GENERAL))
+        });
+        if let Some(p) = page {
+            w.show_page(p);
+        }
+        w.window.clone()
+    });
+    refresh();
+    if let Some(w) = w {
+        w.makeKeyAndOrderFront(None);
+    }
 }
 
 /// Apply an app action, then carry out its effects with no borrow held.
@@ -210,8 +284,8 @@ fn run_effects(fx: Vec<Effect>) {
         let t = t.clone();
         with(|s| s.win.toast(&t));
     }
-    if out.open_settings.is_some() {
-        shell_command(ShellCommand::Settings);
+    if let Some(page) = out.open_settings {
+        open_settings(Some(page));
     }
     for a in out.answers {
         dispatch(AppAction::Answer(a));
@@ -285,8 +359,8 @@ fn shell_command(c: ShellCommand) {
                 message: text,
             }]);
         }
-        ShellCommand::Settings
-        | ShellCommand::SavedStates
+        ShellCommand::Settings => open_settings(None),
+        ShellCommand::SavedStates
         | ShellCommand::BrowseFiles
         | ShellCommand::BrowseDisk(_)
         | ShellCommand::NewMachine

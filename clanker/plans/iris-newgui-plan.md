@@ -17,7 +17,7 @@ CONTRIBUTING section before writing a controller.
 |---|---|
 | Branch `core-activity-counters` | Merged into `main` as PR techomancer/iris#797 (2026-11-22). |
 | Branch `iris-newgui` | Rebased onto `main` after #797 merged (2026-11-22). Local only, never pushed. Holds this plan and the GUI work. |
-| GUI code | Phase 4 started: the AppKit shell (`iris-gui/frontends/appkit`, binary `iris-appkit`) has slices 0 to 2: app, window, toolbar, menu bar, wake, library, effects, quit through the controller, the summary page, and the Metal presenter with physical-key input, capture, full screen and detach (presenter and key path checked by running; mouse capture, full screen and detach not yet tried by hand). Phase 2 under way: App, Session, Display, Settings (schema), Network, Serial, Bench, Camera, Debug, new-machine and disk-browser controller slices done (library, folders, duplicate, quit guard; power on/off with the preflights as controller questions, saved states, discs, copy-on-write, NVRAM reset, status-bar lights from the core counters; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
+| GUI code | Phase 4 started: the AppKit shell (`iris-gui/frontends/appkit`, binary `iris-appkit`) has slices 0 to 2 and 4: app, window, toolbar, menu bar, wake, library, effects, quit through the controller, the summary page, the Metal presenter with physical-key input, capture, full screen and detach (presenter and key path checked by running; mouse capture, full screen and detach not yet tried by hand), and the settings window over the schema (every field kind drawn; port forward, CD-ROM, copy-on-write and remove edits driven by the script hook reached the machine's TOML). Slice 3 (clickable lights) is not done. Phase 2 under way: App, Session, Display, Settings (schema), Network, Serial, Bench, Camera, Debug, new-machine and disk-browser controller slices done (library, folders, duplicate, quit guard; power on/off with the preflights as controller questions, saved states, discs, copy-on-write, NVRAM reset, status-bar lights from the core counters; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
 | Mock-ups | **Not in the repository, by the user's decision; do not commit mock-ups or screenshots.** Seven boards (stopped, running and settings in light and dark, and the macOS menu bar) are in the git-ignored `ignore/mockups/` on the user's machine, with their sources in `src/` (`node expand.js <in> <out.html> [light|dark]` makes plain HTML) and the annotated feedback screenshot; ask the user if the folder is absent. They predate the feedback in [Design changes from feedback](#design-changes-from-feedback-2026-11-21), so [The window](#the-window) is the specification. |
 | Unrelated finding | `kona-tile-handoff-race.md`: a real hang in the KONA tile scheduler, test ignored, not fixed. Not part of this work. |
 
@@ -551,8 +551,17 @@ Not approved, ask first: a serial counter in the core; anything else in
 - **AppKit quit** goes through `applicationShouldTerminate:`, which asks the
   controller; Cmd+Q now folds CHD diffs like a window close.
 - **AppKit test hook**: `IRIS_APPKIT_SCRIPT` runs command ids (and
-  `select:NAME`) a few seconds apart, so the shell can be driven by its
-  controller ids with the screen locked.
+  `select:NAME`, `page:SECTION`, `set:CONTROL=VALUE`) a few seconds apart, so
+  the shell can be driven by its controller ids with the screen locked.
+- **Settings controls by id**: a shell names each settings control
+  `settings::control_id(field, row, part)` and turns a control's report into
+  an action with `settings::action_for`, so table rows need no per-shell
+  routing. The AppKit settings are a window, not a sheet: edits apply at
+  once and autosave, so there is nothing to confirm, and the machine stays
+  visible beside it.
+- **Autosave needs a timed tick** in a shell that sleeps until woken: a
+  stopped machine sends no wakes, so AppKit schedules a tick at
+  `autosave_due_in()`.
 - **Reset NVRAM** now asks first; it loses PROM `setenv` settings.
 - **Interim accessors.** `AppController::config_mut`, `prefs_mut` and
   `SessionController::handle{,_mut}` are `#[doc(hidden)]` bridges for egui

@@ -25,6 +25,8 @@ mod library;
 #[cfg(target_os = "macos")]
 mod menu;
 #[cfg(target_os = "macos")]
+mod settings;
+#[cfg(target_os = "macos")]
 mod summary;
 #[cfg(target_os = "macos")]
 mod toolbar;
