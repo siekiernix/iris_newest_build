@@ -187,7 +187,12 @@ pub fn build(mtm: MainThreadMarker) {
             Some(system(mtm, &t!("mb-zoom"), sel!(performZoom:), "")),
         ],
     );
-    submenu(mtm, &bar, &t!("mb-help"), vec![o(t!("mb-guide"), m::GUIDE), o(t!("mb-report-issue"), m::REPORT_ISSUE)]);
+    let mut help = vec![o(t!("mb-guide"), m::GUIDE), None];
+    for p in iris_gui_core::controller::help::HelpPage::all() {
+        help.push(o(p.menu_title(), p.id()));
+    }
+    help.extend([None, o(t!("mb-report-issue"), m::REPORT_ISSUE)]);
+    submenu(mtm, &bar, &t!("mb-help"), help);
 
     let app = NSApplication::sharedApplication(mtm);
     app.setMainMenu(Some(&bar));

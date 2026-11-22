@@ -462,3 +462,95 @@ impl BenchWindow {
         })
     }
 }
+
+// ---- Help pages ----------------------------------------------------------------
+
+pub struct HelpWindow {
+    pub window: Retained<NSWindow>,
+    pub page: iris_gui_core::controller::help::HelpPage,
+}
+
+/// The id prefix of a link button; the URL follows.
+pub const LINK: &str = "link:";
+
+impl HelpWindow {
+    /// A window showing `doc`; closing it simply hides it.
+    pub fn new(mtm: MainThreadMarker, page: iris_gui_core::controller::help::HelpPage, doc: &iris_gui_core::controller::help::HelpDoc) -> Self {
+        use iris_gui_core::controller::help::Line;
+        let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
+        // SAFETY: a standard window, kept by the shell.
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                mtm.alloc(),
+                NSRect::new(NSPoint::new(260.0, 200.0), NSSize::new(640.0, 560.0)),
+                style,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        // SAFETY: the shell keeps the window.
+        unsafe { window.setReleasedWhenClosed(false) };
+        window.setTitle(&ns(&doc.title));
+        let mono = || NSFont::userFixedPitchFontOfSize(12.0).unwrap_or_else(|| NSFont::systemFontOfSize(12.0));
+        let wrap = |text: &str, color: Option<Retained<NSColor>>| {
+            let l = NSTextField::wrappingLabelWithString(&ns(text), mtm);
+            l.setSelectable(true);
+            l.setPreferredMaxLayoutWidth(580.0);
+            if let Some(c) = color {
+                l.setTextColor(Some(&c));
+            }
+            l
+        };
+        let mut rows: Vec<Retained<NSView>> = Vec::new();
+        for line in &doc.lines {
+            let v: Retained<NSView> = match line {
+                Line::Heading(t) => view(&heading(mtm, t, 16.0)),
+                Line::Strong(t) => view(&heading(mtm, t, 13.0)),
+                Line::Text(t) => view(&wrap(t, None)),
+                Line::Weak(t) => view(&wrap(t, Some(NSColor::secondaryLabelColor()))),
+                Line::Warn(t) => view(&wrap(t, Some(NSColor::systemOrangeColor()))),
+                Line::Error(t) => view(&wrap(t, Some(NSColor::systemRedColor()))),
+                Line::Code(t) => {
+                    let l = wrap(t, None);
+                    l.setFont(Some(&mono()));
+                    view(&l)
+                }
+                Line::Link { label, url } => {
+                    let b = button(mtm, label, &format!("{LINK}{url}"));
+                    b.setBordered(false);
+                    b.setContentTintColor(Some(&NSColor::linkColor()));
+                    b.setToolTip(Some(&ns(url)));
+                    view(&b)
+                }
+                Line::Rule => {
+                    let b = objc2_app_kit::NSBox::new(mtm);
+                    b.setBoxType(objc2_app_kit::NSBoxType::Separator);
+                    b.widthAnchor().constraintEqualToConstant(580.0).setActive(true);
+                    view(&b)
+                }
+            };
+            rows.push(v);
+        }
+        let page_view = stack(mtm, &rows, true, 8.0);
+        insets(&page_view, 20.0);
+        let scroll = objc2_app_kit::NSScrollView::initWithFrame(mtm.alloc(), NSRect::ZERO);
+        scroll.setHasVerticalScroller(true);
+        scroll.setDrawsBackground(false);
+        let doc_view = crate::ui::flipped(mtm);
+        doc_view.setTranslatesAutoresizingMaskIntoConstraints(false);
+        page_view.setTranslatesAutoresizingMaskIntoConstraints(false);
+        doc_view.addSubview(&page_view);
+        scroll.setDocumentView(Some(&doc_view));
+        let clip = scroll.contentView();
+        doc_view.topAnchor().constraintEqualToAnchor(&clip.topAnchor()).setActive(true);
+        doc_view.leadingAnchor().constraintEqualToAnchor(&clip.leadingAnchor()).setActive(true);
+        doc_view.widthAnchor().constraintEqualToAnchor(&clip.widthAnchor()).setActive(true);
+        page_view.topAnchor().constraintEqualToAnchor(&doc_view.topAnchor()).setActive(true);
+        page_view.leadingAnchor().constraintEqualToAnchor(&doc_view.leadingAnchor()).setActive(true);
+        doc_view.heightAnchor().constraintEqualToAnchor(&page_view.heightAnchor()).setActive(true);
+        fill(&window, &scroll);
+        set_id(&scroll, page.id());
+        window.center();
+        Self { window, page }
+    }
+}

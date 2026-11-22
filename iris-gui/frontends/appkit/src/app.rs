@@ -35,6 +35,7 @@ struct Shell {
     serial: Option<crate::panels::SerialWindow>,
     camera: Option<crate::panels::CameraWindow>,
     bench: Option<crate::panels::BenchWindow>,
+    help: Vec<crate::panels::HelpWindow>,
 }
 
 thread_local! {
@@ -119,7 +120,7 @@ fn start(mtm: MainThreadMarker) {
     head1.set_wake(wake.clone());
     win.window.makeKeyAndOrderFront(None);
     let empty = app.is_empty();
-    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None, new_machine: None, browser: None, prefs: None, net: None, serial: None, camera: None, bench: None }));
+    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None, new_machine: None, browser: None, prefs: None, net: None, serial: None, camera: None, bench: None, help: Vec::new() }));
     NSApplication::sharedApplication(mtm).activate();
     refresh();
     tick();
@@ -557,8 +558,34 @@ pub fn close_browser() {
 /// The Diagnostics alert's purpose (its Copy button).
 const DIAGNOSTICS: &str = "shell.diagnostics";
 
+/// Show help page `page`, built now from the selected machine (it carries
+/// live values); an open window for the page is rebuilt and brought forward.
+fn show_help(page: iris_gui_core::controller::help::HelpPage) {
+    let m = mtm();
+    let w = with(|s| {
+        let doc = s.app.help(page, env!("APP_VERSION"), env!("APP_COMMIT"));
+        if let Some(i) = s.help.iter().position(|h| h.page == page) {
+            let old = s.help.remove(i);
+            old.window.orderOut(None);
+        }
+        let w = crate::panels::HelpWindow::new(m, page, &doc);
+        let win = w.window.clone();
+        s.help.push(w);
+        win
+    });
+    if let Some(w) = w {
+        w.makeKeyAndOrderFront(None);
+    }
+}
+
 /// A toolbar item, menu item or button with this command id was used.
 pub fn command(id: &str) {
+    if let Some(url) = id.strip_prefix(crate::panels::LINK) {
+        return run_effects(vec![Effect::OpenUrl(url.to_string())]);
+    }
+    if let Some(page) = iris_gui_core::controller::help::HelpPage::from_id(id) {
+        return show_help(page);
+    }
     if id.starts_with("browser.") {
         return browser_control(id, false);
     }
@@ -628,14 +655,7 @@ fn shell_command(c: ShellCommand) {
                 }
             }
         }
-        ShellCommand::About => {
-            let text = iris_gui_core::controller::debug::diagnostics_text();
-            run_effects(vec![Effect::Alert {
-                severity: iris_gui_core::controller::Severity::Info,
-                title: t!("app-name"),
-                message: text,
-            }]);
-        }
+        ShellCommand::About => show_help(iris_gui_core::controller::help::HelpPage::About),
         ShellCommand::Settings => open_settings(None),
         ShellCommand::NewMachine => open_new_machine(),
         ShellCommand::SavedStates => {

@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use iris::net::nfsudp::NfsVersion;
 use iris::config::{
     ForwardBind, ForwardProto, GraphicsBoard, MachineConfig, MachineProfile, NetMode, PortForwardConfig,
     ScsiDeviceConfig, ScsiKind, VinoSource, VinoStandard, VALID_BANK_SIZES,
@@ -38,6 +39,10 @@ pub mod field {
     pub const NAT_SUBNET: &str = "settings.network.nat-subnet";
     pub const PCAP_INTERFACE: &str = "settings.network.pcap-interface";
     pub const FORWARDS: &str = "settings.network.forwards";
+    pub const NFS_ENABLE: &str = "settings.network.nfs";
+    pub const NFS_DIR: &str = "settings.network.nfs-dir";
+    pub const NFS_VERSION: &str = "settings.network.nfs-version";
+    pub const NFS_PCAP_IP: &str = "settings.network.nfs-pcap-ip";
     pub const VINO_SOURCE: &str = "settings.video-in.source";
     pub const VINO_STANDARD: &str = "settings.video-in.standard";
     pub const VINO_CAMERA: &str = "settings.video-in.camera";
@@ -235,7 +240,7 @@ pub fn action_for(id: &str, value: Value, disk_keys: &[u8], forwards: &[ForwardR
         field::PCAP_INTERFACE, field::FORWARDS, field::TOML, field::VINO_SOURCE, field::VINO_STANDARD,
         field::VINO_CAMERA, field::AFFINITY, field::CPU_CORE, field::REX3_CORE, field::REFRESH_CORE,
         field::JIT_THREADS_AUTO, field::JIT_THREADS, field::JIT_CACHE, field::JIT_CACHE_DIR, field::VNC_LISTEN,
-        field::VNC_FPS, field::VNC_PASSWORD,
+        field::VNC_FPS, field::VNC_PASSWORD, field::NFS_ENABLE, field::NFS_DIR, field::NFS_VERSION, field::NFS_PCAP_IP,
     ]
     .into_iter()
     .find(|x| *x == f)?;
@@ -541,6 +546,45 @@ impl SettingsController {
             }
             NetMode::Off | NetMode::Stream => {}
         }
+        // The NFS share: a host folder IRIX mounts over the network.
+        if mode != NetMode::Off {
+            f.push(Field {
+                id: field::NFS_ENABLE,
+                label: t!("config-nfs-enable"),
+                help: None,
+                kind: FieldKind::Toggle(cfg.nfs.is_some()),
+                enabled: at_power_on(),
+            });
+            if let Some(nfs) = &cfg.nfs {
+                f.push(Field {
+                    id: field::NFS_DIR,
+                    label: t!("config-nfs-dir"),
+                    help: None,
+                    kind: FieldKind::Path { value: nfs.shared_dir.clone(), pick: PickKind::Folder },
+                    enabled: at_power_on(),
+                });
+                f.push(Field {
+                    id: field::NFS_VERSION,
+                    label: t!("config-nfs-version"),
+                    help: None,
+                    kind: FieldKind::Choice {
+                        options: vec![t!("common-auto"), t!("config-nfs-v2"), t!("config-nfs-v3")],
+                        selected: NFS_VERSIONS.iter().position(|v| *v == nfs.version).unwrap_or(0),
+                    },
+                    enabled: at_power_on(),
+                });
+                if mode == NetMode::Pcap {
+                    let value = cfg.network.nfs_pcap_ip.map(|i| i.to_string()).unwrap_or_default();
+                    f.push(Field {
+                        id: field::NFS_PCAP_IP,
+                        label: t!("config-nfs-pcap-ip"),
+                        help: None,
+                        kind: FieldKind::Text { value, placeholder: t!("config-nfs-pcap-ip-hint"), error: None },
+                        enabled: at_power_on(),
+                    });
+                }
+            }
+        }
         out.push(Section {
             id: super::ids::settings::NETWORK,
             title: t!("settings-section-network"),
@@ -709,12 +753,14 @@ impl SettingsController {
             SettingsAction::Set { field, value } => set(cfg, field, value),
             SettingsAction::Pick(field) => {
                 let title = t!("common-browse");
-                let spec = match field {
-                    field::PROM | field::NVRAM | field::NVEEPROM | field::VNC_PASSWORD => PickSpec::open(PICK, title).in_dir(dir),
+                let spec = PickSpec::open(PICK, title).in_dir(dir);
+                let effect = match field {
+                    field::PROM | field::NVRAM | field::NVEEPROM | field::VNC_PASSWORD => Effect::PickFile(spec),
+                    field::NFS_DIR => Effect::PickFolder(spec),
                     _ => return (false, fx),
                 };
                 self.picking = Some((field, None));
-                fx.push(Effect::PickFile(spec));
+                fx.push(effect);
                 false
             }
             SettingsAction::Bank { index, size } => {
@@ -857,6 +903,9 @@ fn net_mode_label(m: NetMode) -> String {
     }
 }
 
+/// The NFS version popup's order.
+const NFS_VERSIONS: [NfsVersion; 3] = [NfsVersion::Auto, NfsVersion::V2, NfsVersion::V3];
+
 /// The Video In source popup's order.
 const VINO_SOURCES: [VinoSource; 4] = [VinoSource::Off, VinoSource::TestPattern, VinoSource::Camera, VinoSource::Black];
 
@@ -905,6 +954,28 @@ fn set(cfg: &mut MachineConfig, field: &'static str, value: Value) -> bool {
             }
             true
         }
+        (field::NFS_ENABLE, Value::Bool(on)) => {
+            if on == cfg.nfs.is_some() {
+                return false;
+            }
+            cfg.nfs = on.then(|| iris::config::NfsConfig { shared_dir: String::new(), version: NfsVersion::Auto });
+            true
+        }
+        (field::NFS_DIR, Value::Text(t)) => match cfg.nfs.as_mut() {
+            Some(n) => replace(&mut n.shared_dir, t.trim().to_string()),
+            None => false,
+        },
+        (field::NFS_VERSION, Value::Index(i)) => match (cfg.nfs.as_mut(), NFS_VERSIONS.get(i)) {
+            (Some(n), Some(v)) => set_num(&mut n.version, *v),
+            _ => false,
+        },
+        (field::NFS_PCAP_IP, Value::Text(t)) => match t.trim() {
+            "" => set_num(&mut cfg.network.nfs_pcap_ip, None),
+            t => match t.parse() {
+                Ok(ip) => set_num(&mut cfg.network.nfs_pcap_ip, Some(ip)),
+                Err(_) => false,
+            },
+        },
         (field::VINO_SOURCE, Value::Index(i)) => match VINO_SOURCES.get(i) {
             Some(v) => set_num(&mut cfg.vino.source, v.clone()),
             None => false,
@@ -1084,6 +1155,15 @@ mod tests {
         assert_eq!(cfg.vnc.listen.as_deref(), Some("5901"));
         assert!(!set(&mut c, &mut cfg, field::VNC_LISTEN, Value::Text("5901".into())), "no change");
         cfg.validate().unwrap();
+        // The NFS share.
+        assert!(set(&mut c, &mut cfg, field::NFS_ENABLE, Value::Bool(true)));
+        assert!(set(&mut c, &mut cfg, field::NFS_DIR, Value::Text("/tmp/share".into())));
+        assert!(set(&mut c, &mut cfg, field::NFS_VERSION, Value::Index(1)));
+        assert_eq!(cfg.nfs.as_ref().map(|n| (n.shared_dir.as_str(), n.version)), Some(("/tmp/share", NfsVersion::V2)));
+        let (_, fx) = c.apply(SettingsAction::Pick(field::NFS_DIR), &mut cfg, None);
+        assert!(matches!(fx.as_slice(), [Effect::PickFolder(_)]));
+        assert!(set(&mut c, &mut cfg, field::NFS_ENABLE, Value::Bool(false)));
+        assert!(cfg.nfs.is_none());
         // Only the Indy has VINO.
         cfg.machine.profile = MachineProfile::O2Ip32;
         assert!(!c.sections(&cfg, false).iter().any(|x| x.id == "settings.video-in"));

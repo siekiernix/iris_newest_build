@@ -1176,6 +1176,24 @@ mod tests {
     }
 
     #[test]
+    fn every_help_page_has_a_title_and_lines() {
+        use super::super::help::{HelpPage, Line};
+        let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
+        let root = TempRoot::new("help");
+        let mut app = app_in(&root, &["alpha"]);
+        for p in HelpPage::all().into_iter().chain([HelpPage::About]) {
+            let d = app.help(p, "1.2.3", "abcdef12");
+            assert!(!d.title.is_empty() && !d.lines.is_empty(), "{p:?}");
+            assert_eq!(HelpPage::from_id(p.id()), Some(p));
+        }
+        let about = app.help(HelpPage::About, "1.2.3", "abcdef12");
+        assert!(about.lines.iter().any(|l| matches!(l, Line::Text(t) if t.contains("1.2.3"))));
+        let lic = app.help(HelpPage::Licenses, "", "");
+        assert!(lic.lines.iter().any(|l| matches!(l, Line::Code(t) if t.contains("MIT"))));
+        app.shutdown();
+    }
+
+    #[test]
     fn quitting_with_nothing_pending_saves_and_quits() {
         let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
         let root = TempRoot::new("quit");
