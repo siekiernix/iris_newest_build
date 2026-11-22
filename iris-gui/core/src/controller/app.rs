@@ -139,6 +139,28 @@ pub struct AppController {
 }
 
 impl AppController {
+    /// Start-up for a shell: claim the single-instance lock (ending a stale
+    /// copy that holds the ports), load the preferences, pick the language,
+    /// set the environment the embedded core reads, and select the machine.
+    /// Call once, before any machine can start.
+    pub fn launch(notify: Arc<dyn Notify>) -> Self {
+        // The core must not exit the process when a guest powers off.
+        std::env::set_var("IRIS_NO_EXIT_ON_POWEROFF", "1");
+        // The App Sandbox only allows MAP_JIT pages; the JITs would be killed.
+        #[cfg(feature = "appstore")]
+        std::env::set_var("IRIS_NO_JIT", "1");
+        crate::model::single_instance::acquire();
+        let prefs = GuiSettings::load();
+        crate::model::i18n::set_language(&prefs.language);
+        crate::model::macos_sandbox::restore(&prefs.bookmarks);
+        Self::new(prefs, notify)
+    }
+
+    /// The last step of a shell's exit: release the single-instance lock.
+    pub fn release_instance() {
+        crate::model::single_instance::release();
+    }
+
     /// Take over `prefs` (already loaded) and select its active machine.
     pub fn new(mut prefs: GuiSettings, notify: Arc<dyn Notify>) -> Self {
         let mut cfg = MachineConfig::default();

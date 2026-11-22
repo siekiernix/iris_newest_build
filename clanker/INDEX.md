@@ -382,6 +382,7 @@ Host GL pass-through for guest GL programs (`iris-hostgl`).
 | Note | Kind | Title |
 |---|---|---|
 | [01-overview.md](gui/01-overview.md) | design | iris-gui — overview |
+| [disk-browser-xfs-log-replay.md](gui/disk-browser-xfs-log-replay.md) | rule | Disk browser: XFS opens read-only until Edit Anyway; fs-xfs 0.2 cannot see an unreplayed log |
 | [disk-core-create-modes-carry-the-file-type.md](gui/disk-core-create-modes-carry-the-file-type.md) | rule | Disk browser: `create_file`/`create_directory` modes must include S_IFREG/S_IFDIR |
 | [cdrom-hot-insert-remount.md](gui/cdrom-hot-insert-remount.md) | rule | GUI CD-ROM insert must hot-load + remount /CDROM |
 | [cmd-q-bypasses-close-intercept-fold-on-poweroff.md](gui/cmd-q-bypasses-close-intercept-fold-on-poweroff.md) | rule | macOS Cmd+Q bypasses the close-intercept — fold CHD overlays on power-off, not just quit |

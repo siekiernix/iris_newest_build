@@ -404,9 +404,24 @@ with `fs_unix::ext::ExtFilesystem::open(reader, offset)`, which is both
   `IRIS_BROWSER_TEST_IMAGE`). Found and fixed: new inodes need the file-type
   bits (`clanker/gui/disk-core-create-modes-carry-the-file-type.md`).
 
+- **Booted and checked by IRIX** (2026-11-22). The edited IRIX 5.3 copy
+  booted to the desktop, showed the edited `/etc/motd` at login, listed the
+  imported files and read them back. Attached unmounted to a pristine copy,
+  IRIX's `fsck -n` reported exactly what it reports for an untouched copy
+  (orphan inode 371, a free-inode count), nothing new. The edited 6.5 XFS
+  copy, attached the same way: `xfs_repair -n` matched the untouched copy,
+  and after IRIX replayed the log on a read-write mount every edit was
+  there. Both 6.5 copies have an unreplayed log, which fs-xfs cannot see;
+  XFS therefore opens read-only until Edit Anyway
+  (`clanker/gui/disk-browser-xfs-log-replay.md`).
+- Found by the IRIS boot and fixed: folder imports took the host's owner;
+  they now take the destination folder's, as decided.
+
 ### Not verified
 
-- No disk the crates edited has been mounted by IRIX yet. Try every write action on a copy of a real IRIX disk,
+- Booting a disk whose *root* the browser edited while its log was dirty
+  (the replay case above was a second disk, mounted after the edits).
+- fs-xfs's directory hash on an IRIX-made v2 directory beyond these edits. Try every write action on a copy of a real IRIX disk,
   boot it, and run `fsck` / `xfs_check` in the guest before trusting it.
 - `fs-xfs`'s rewritten directory hash was checked against Linux-made
   volumes, not an IRIX-made one.

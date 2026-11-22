@@ -473,6 +473,12 @@ impl DiskBrowserController {
                         check = Some(t!("browser-check-failed-ro", count = r.errors.len()));
                     }
                 }
+                // fs-xfs 0.2 cannot tell whether the log was replayed. Editing
+                // over an unreplayed log can be undone when IRIX replays it,
+                // so XFS waits for the user's say-so.
+                if check.is_none() && p.kind == PartKind::Xfs {
+                    check = Some(t!("browser-xfs-log-unknown"));
+                }
             }
             *fs.lock().map_err(|_| "lock")? = Some(open);
             Ok(Done::Opened { names, check })
@@ -791,6 +797,12 @@ impl DiskBrowserController {
                     }
                     let s = rb_fsimporter::import_dir_with(efs, &target, p, &opts, None, &H(ctx, done, total))
                         .map_err(|e| e.to_string())?;
+                    // The importer applies the host's owner with its mode; the
+                    // decided default is the host's mode and the destination's
+                    // owner, so put the owner right afterwards.
+                    if let (Some(u), Some(g)) = (uid, gid) {
+                        chown_tree(efs, &target, u, g).map_err(|e| e.to_string())?;
+                    }
                     done += s.total_bytes;
                 } else {
                     if let Some(e) = existing {
@@ -1089,6 +1101,27 @@ impl Drop for DiskBrowserController {
     }
 }
 
+/// Give everything under `dir` the owner `uid:gid`.
+fn chown_tree(
+    efs: &mut dyn disk_core::filesystem::EditableFilesystem,
+    dir: &FileEntry,
+    uid: u32,
+    gid: u32,
+) -> Result<(), disk_core::filesystem::FilesystemError> {
+    for e in efs.list_directory(dir)? {
+        if e.name == "." || e.name == ".." {
+            continue;
+        }
+        if e.uid != Some(uid) || e.gid != Some(gid) {
+            efs.set_owner(&e, uid, gid)?;
+        }
+        if e.is_directory() {
+            chown_tree(efs, &e, uid, gid)?;
+        }
+    }
+    Ok(())
+}
+
 fn dir_options(unpack: bool, replace: bool) -> rb_fsimporter::DirImportOptions {
     let mut o = rb_fsimporter::DirImportOptions::default();
     o.expand_archives = unpack;
@@ -1258,6 +1291,15 @@ mod tests {
         b.apply(BrowserAction::Answer(Answer::Picked { purpose: P_IMPORT_FOLDER, paths: vec![src.clone(), host.0.join("single.txt")] }));
         no_errors(&answer(&mut b, Answer::Chose { purpose: P_IMPORT_GO, index: 1 }));
         assert!(find(&b, "pkg").is_some() && find(&b, "single.txt").is_some(), "{:?}", b.rows());
+        // New files take the destination folder's owner (iris-renamed is guest:user).
+        let pkg = &b.rows()[find(&b, "pkg").unwrap()];
+        assert_eq!((pkg.owner.as_str(), pkg.group.as_str()), ("guest", "user"));
+        go(&mut b, "pkg");
+        go(&mut b, "sub");
+        let data = &b.rows()[find(&b, "data.bin").unwrap()];
+        assert_eq!((data.owner.as_str(), data.group.as_str()), ("guest", "user"), "{data:?}");
+        b.apply(BrowserAction::GoTo(2));
+        settle(&mut b);
 
         // Export it back and compare.
         b.apply(BrowserAction::Select(vec![find(&b, "pkg").unwrap()]));

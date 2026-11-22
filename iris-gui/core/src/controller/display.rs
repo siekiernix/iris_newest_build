@@ -10,6 +10,8 @@
 use std::time::{Duration, Instant};
 
 pub use winit::keyboard::KeyCode as GuestKey;
+/// The guest's frames as the shell's presenter takes them.
+pub use crate::model::framebuffer::{Frame, FrameSink};
 
 use super::keys::{CaptureChords, ModKey};
 use super::Effect;

@@ -76,6 +76,7 @@ browser-delete-title = Delete { $count ->
 }?
 browser-delete-body = This deletes { $names } from the disk. It can't be undone.
 browser-delete-body-dirs = This deletes { $names } and everything in them from the disk. It can't be undone.
+browser-xfs-log-unknown = XFS opens read-only: this browser can't tell whether the filesystem's log was replayed. If the machine was stopped without shutting IRIX down, boot it and shut down cleanly first, then choose Edit Anyway.
 browser-edit-anyway-title = Edit a damaged filesystem?
 browser-edit-anyway-body = The check found problems. Changing the filesystem now can make them worse. Running fsck in IRIX first is safer.
 browser-edit-anyway-ok = Edit anyway

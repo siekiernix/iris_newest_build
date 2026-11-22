@@ -1,0 +1,31 @@
+[package]
+name = "iris-gui-appkit"
+version = "0.1.0"
+edition = "2021"
+description = "IRIS, the native macOS front end: AppKit over iris-gui-core's controllers"
+license = "BSD-3-Clause"
+publish = false
+
+# Phase 4 of clanker/plans/iris-newgui-plan.md. A pure view over
+# iris_gui_core::controller: it renders, maps input to actions and carries out
+# effects. Everything is gated on macOS (D19), so `cargo build --workspace`
+# elsewhere builds a binary that only says so.
+
+[[bin]]
+name = "iris-appkit"
+path = "src/main.rs"
+
+[features]
+# Forwarded to the core, as iris-gui does.
+pcap = ["iris-gui-core/iris-pcap"]
+
+[dependencies]
+iris-gui-core = { path = "../../core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-quartz-core = "0.3"
+objc2-metal = "0.3"
+dispatch2 = "0.3"

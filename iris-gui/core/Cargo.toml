@@ -19,6 +19,8 @@ bundled = []
 appstore = ["bundled"]
 # Experimental GPU-authoritative raster backends (see iris-gui/Cargo.toml).
 wgpu = ["iris/wgpu"]
+# Bridged networking (libpcap), for shells that build with it.
+iris-pcap = ["iris/pcap"]
 
 [dependencies]
 # Same features as iris-gui asks for, so building this crate alone does not
