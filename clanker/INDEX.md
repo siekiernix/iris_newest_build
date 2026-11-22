@@ -426,6 +426,7 @@ Mac App Store and sandbox constraints.
 | [appstore-private-api.md](macos/appstore-private-api.md) | rule | Mac App Store rejects winit's private SkyLight blur API (`CGSSetWindowBackgroundBlurRadius`) |
 | [chd-fold-needs-folder-grant-not-file-grant.md](macos/chd-fold-needs-folder-grant-not-file-grant.md) | rule | macOS App Sandbox: the CHD on-exit fold needs a *folder* grant, not a file grant |
 | [test-the-app-sandbox-locally-without-the-app-store.md](macos/test-the-app-sandbox-locally-without-the-app-store.md) | howto | Test the macOS App Sandbox locally — no App Store round-trip needed |
+| [drive-the-appkit-shell-with-the-screen-locked.md](macos/drive-the-appkit-shell-with-the-screen-locked.md) | howto | Script steps, scripted prompt answers and window captures for the AppKit preview; what stalls a script |
 | [winit-030-window-handle-main-thread-only.md](macos/winit-030-window-handle-main-thread-only.md) | rule | winit 0.30 macOS: window_handle() only works on the main thread |
 
 ## snapshot/

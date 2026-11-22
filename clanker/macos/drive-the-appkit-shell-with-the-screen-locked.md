@@ -1,0 +1,37 @@
+# Drive the AppKit shell with the screen locked
+
+The AppKit preview (`iris-gui/frontends/appkit`) has test hooks so an agent
+can drive it and see it without the screen unlocked.
+
+- `IRIS_APPKIT_SCRIPT="step;step;..."` runs one step every
+  `IRIS_APPKIT_SCRIPT_DELAY` seconds (default 3). A step is a command id
+  (`toolbar.power-on`, `menu.close`, `help.nfs`, `browse:1`, a status light
+  id), or `select:NAME`, `page:SECTION` (settings), `set:CONTROL=VALUE`
+  (`i:N`, `b:0/1`, `t:TEXT`, `n:NUM`, as the control would report),
+  `open:N`/`pick:N,M` (browser rows), `drop:PATH`, `type:TEXT` (the browser's
+  editor, `\n` for a newline), `dump:browser`, `dump:devices`.
+- `IRIS_APPKIT_ANSWERS="yes;text:foo;choose:1;pick:/path"` answers the next
+  prompts (confirm, text, choice, file or folder picker) in order; later
+  prompts show their real panels. Every disk-browser write starts with one.
+- Run with `HOME=<scratch>` so the library, settings and window frames are
+  separate from the user's.
+- See windows with `screencapture -x -l <window id>`. Get ids from
+  `CGWindowListCopyWindowInfo` filtered on the owner name, case-insensitively:
+  the bundled app's owner is "IRIS Preview", the debug binary's "iris-appkit".
+  Window frames are autosaved per window, so a window that grew once stays
+  large in later runs.
+
+Gotchas:
+
+- A script step that opens a modal panel or a pop-up menu stalls the script
+  (`performSelector:afterDelay:` does not fire in those run-loop modes):
+  answer panels through `IRIS_APPKIT_ANSWERS`, and do not script pop-ups.
+- With the screen locked the app is never active, so there is no key window.
+- The app's embedded core has no `screen`, `ptr` or `key` monitor commands
+  (those belong to the CLI's display), and Shut Down sends `halt` to the
+  serial console, which does nothing on a guest whose console is the
+  graphics screen. A guest booted in the app with the screen locked cannot be
+  shut down cleanly; do not start IRIX from a script unless something can
+  log in (a telnet forward to a guest whose network is up).
+- Stop every run you start: a forgotten instance keeps its disk browser's
+  image open.

@@ -310,7 +310,8 @@ time, since only one machine runs at once. It has the library, the summary
 page, the guest display (Metal), the machine settings, the new-machine
 window, saved states, the serial console, Check Networking, the benchmark,
 the camera test and Preferences, with SF Symbols and the system's light and
-dark appearance.
+dark appearance. The machine settings include Video In (the Indy's camera)
+and Performance (thread pinning, the JIT, the VNC server).
 
 It also has a **disk browser**: the folder button next to a disk on the
 summary page, Browse Files in the toolbar, or a click on a disk's status
@@ -320,8 +321,14 @@ and folders (unpacking `.tardist` and tar archives unless told not to), and
 edits text files, names, permissions and owners on EFS and XFS. CD-ROMs open
 read-only. XFS opens read-only until you choose Edit Anyway, because the
 browser cannot tell whether the filesystem's log still needs replaying: shut
-IRIX down cleanly first. Moving files between folders and drag-and-drop
-import are not there yet.
+IRIX down cleanly first. Files dragged from the Finder onto the list are
+imported. Moving files between folders is not there yet.
+
+The **Devices** menu lists each disk and CD-ROM with what it can do now:
+change or eject a disc, mount it in IRIX, browse it, and commit or discard a
+disk's copy-on-write changes. The Help menu has the guide to mounting the
+shared folder (with the command for this machine), camera and networking,
+the Ultra64 board, the licenses and the privacy policy.
 
 Build and run it from a checkout with `cargo run -p iris-gui-appkit`, or
 make the app with `iris-gui/frontends/appkit/scripts/bundle.sh` (see the
