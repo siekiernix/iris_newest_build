@@ -321,6 +321,7 @@ window-license-chd = CHD disk support comes from libchdman-rs, which is also BSD
 window-license-source = Source:
 window-license-iris-heading = IRIS: BSD 3-Clause License
 window-license-chd-heading = CHD support (libchdman-rs): BSD 3-Clause License
+window-license-rb-heading = Disk browser filesystem crates (MIT)
 window-privacy-title = Privacy policy
 
 ## Help: camera and networking

@@ -2030,6 +2030,8 @@ impl App {
         // The CHD backend (libchdman-rs >= 0.288.8) is BSD-3-Clause, as is the
         // MAME CHD core it vendors, so every build stays fully BSD-3-Clause.
         const LICENSE_CHD: &str = include_str!("../../LICENSE-libchdman-rs.txt");
+        // The disk browser's filesystem crates (MIT).
+        const LICENSE_RB: &str = include_str!("../../LICENSE-rusty-backup-crates.txt");
         if !self.show_license { return; }
         let mut open = true;
         egui::Window::new(t!("window-license-title"))
@@ -2058,6 +2060,11 @@ impl App {
                     ui.label(RichText::new(t!("window-license-chd-heading")).strong());
                     ui.add_space(2.0);
                     ui.label(RichText::new(LICENSE_CHD).monospace());
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.label(RichText::new(t!("window-license-rb-heading")).strong());
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(LICENSE_RB).monospace());
                 });
             });
         if !open { self.show_license = false; }
