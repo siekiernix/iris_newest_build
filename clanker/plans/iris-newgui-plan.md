@@ -308,10 +308,10 @@ dialog is unchanged: it still makes an empty image.
   (dos2unix), off by default. It applies only to files that look like text
   (no NUL bytes in the first block) and never to archives copied as one
   file. The text editor shows the file's line endings and can convert on
-  save. `rb-fsimporter` has no such option today: either it gains a per-file
-  content filter in a later release, or iris converts into a temporary
-  staging folder and imports that. Prefer the release; do not block the
-  browser on it.
+  save. `rb-fsimporter` has no such option today; a release
+  that adds it is assumed to land before the browser ships (requested
+  2026-11-22). Use that option; do not build a staging-folder conversion in
+  iris. Until the release exists, leave the checkbox out.
 - Decided defaults (2026-11-22): new files take the destination folder's
   owner and group; owner and group names are read from the browsed disk's
   own `/etc/passwd` and `/etc/group`, with numbers always accepted; the text
