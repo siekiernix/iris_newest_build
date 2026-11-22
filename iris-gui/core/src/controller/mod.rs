@@ -22,6 +22,7 @@
 pub mod app;
 pub mod bench;
 pub mod camera;
+pub mod commands;
 pub mod debug;
 pub mod disk_browser;
 pub mod display;
@@ -31,6 +32,7 @@ pub mod keys;
 pub mod labels;
 pub mod network;
 pub mod new_machine;
+pub mod overview;
 mod power;
 pub mod profile;
 pub mod serial;

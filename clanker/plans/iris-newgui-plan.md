@@ -17,7 +17,7 @@ CONTRIBUTING section before writing a controller.
 |---|---|
 | Branch `core-activity-counters` | Merged into `main` as PR techomancer/iris#797 (2026-11-22). |
 | Branch `iris-newgui` | Rebased onto `main` after #797 merged (2026-11-22). Local only, never pushed. Holds this plan and the GUI work. |
-| GUI code | Phase 2 under way: App, Session, Display, Settings (schema), Network, Serial, Bench, Camera, Debug, new-machine and disk-browser controller slices done (library, folders, duplicate, quit guard; power on/off with the preflights as controller questions, saved states, discs, copy-on-write, NVRAM reset, status-bar lights from the core counters; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
+| GUI code | Phase 4 started: the AppKit shell (`iris-gui/frontends/appkit`, binary `iris-appkit`) has slice 0 (app, window, toolbar, menu bar, wake, library, effects, quit through the controller) and the summary page; run and looked at. Phase 2 under way: App, Session, Display, Settings (schema), Network, Serial, Bench, Camera, Debug, new-machine and disk-browser controller slices done (library, folders, duplicate, quit guard; power on/off with the preflights as controller questions, saved states, discs, copy-on-write, NVRAM reset, status-bar lights from the core counters; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
 | Mock-ups | **Not in the repository, by the user's decision; do not commit mock-ups or screenshots.** Seven boards (stopped, running and settings in light and dark, and the macOS menu bar) are in the git-ignored `ignore/mockups/` on the user's machine, with their sources in `src/` (`node expand.js <in> <out.html> [light|dark]` makes plain HTML) and the annotated feedback screenshot; ask the user if the folder is absent. They predate the feedback in [Design changes from feedback](#design-changes-from-feedback-2026-11-21), so [The window](#the-window) is the specification. |
 | Unrelated finding | `kona-tile-handoff-race.md`: a real hang in the KONA tile scheduler, test ignored, not fixed. Not part of this work. |
 
@@ -543,6 +543,16 @@ Not approved, ask first: a serial counter in the core; anything else in
   PCAP interface apply live. egui still draws its own tabs over
   `config_mut()` (D16); moving them onto the schema is what remains for the
   boundary count to reach 0.
+- **Commands by id** (`controller::commands`): the toolbar's and menu bar's
+  tooltips, enablement and routing are the controller's; a shell maps a
+  sender's identifier to `AppController::command(id)` and only does the
+  `ShellCommand`s (its own views). Per-item buttons encode the item in the id
+  (`ids::item`).
+- **AppKit quit** goes through `applicationShouldTerminate:`, which asks the
+  controller; Cmd+Q now folds CHD diffs like a window close.
+- **AppKit test hook**: `IRIS_APPKIT_SCRIPT` runs command ids (and
+  `select:NAME`) a few seconds apart, so the shell can be driven by its
+  controller ids with the screen locked.
 - **Reset NVRAM** now asks first; it loses PROM `setenv` settings.
 - **Interim accessors.** `AppController::config_mut`, `prefs_mut` and
   `SessionController::handle{,_mut}` are `#[doc(hidden)]` bridges for egui

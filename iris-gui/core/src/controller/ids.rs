@@ -55,3 +55,16 @@ pub mod settings {
     pub const NETWORK: &str = "settings.network";
     pub const DISPLAY: &str = "settings.display";
 }
+
+/// Per-item buttons on the summary page; the item follows the prefix.
+pub mod item {
+    pub const RESTORE_STATE: &str = "state.restore:";
+    pub const RENAME_STATE: &str = "state.rename:";
+    pub const DELETE_STATE: &str = "state.delete:";
+    /// Followed by the disk's `[scsi.KEY]` key.
+    pub const BROWSE_DISK: &str = "browse:";
+
+    pub fn id(prefix: &str, item: impl std::fmt::Display) -> String {
+        format!("{prefix}{item}")
+    }
+}

@@ -6,7 +6,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSButton, NSColor, NSFont, NSMenuItem, NSTextField, NSToolbarItem, NSUserInterfaceItemIdentification, NSView,
+    NSAccessibility, NSButton, NSColor, NSFont, NSMenuItem, NSTextField, NSToolbarItem, NSUserInterfaceItemIdentification, NSView,
 };
 use objc2_foundation::NSString;
 
@@ -32,6 +32,12 @@ define_class!(
             }
         }
 
+        /// One step of `IRIS_APPKIT_SCRIPT` (see `app::script`).
+        #[unsafe(method(scriptStep:))]
+        fn script_step(&self, _sender: Option<&AnyObject>) {
+            crate::app::script_step();
+        }
+
         #[unsafe(method(validateMenuItem:))]
         fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
             item.identifier().map_or(true, |id| crate::app::enabled(&id.to_string()))
@@ -43,6 +49,32 @@ define_class!(
         }
     }
 );
+
+define_class!(
+    /// A container whose y axis grows down, so a scroll view's short page
+    /// sits at the top.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "IRISFlippedView"]
+    pub struct Flipped;
+
+    unsafe impl NSObjectProtocol for Flipped {}
+
+    impl Flipped {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+    }
+);
+
+/// A new flipped container.
+pub fn flipped(mtm: MainThreadMarker) -> Retained<NSView> {
+    let this = mtm.alloc::<Flipped>().set_ivars(());
+    // SAFETY: NSView's designated initialiser.
+    let v: Retained<Flipped> = unsafe { msg_send![super(this), initWithFrame: objc2_foundation::NSRect::ZERO] };
+    Retained::into_super(v)
+}
 
 thread_local! {
     static TARGET: OnceCell<Retained<Target>> = const { OnceCell::new() };
