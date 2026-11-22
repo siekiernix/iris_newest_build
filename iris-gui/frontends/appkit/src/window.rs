@@ -3,6 +3,9 @@
 
 use objc2::rc::Retained;
 use objc2::Message;
+use objc2::runtime::{NSObject, NSObjectProtocol};
+use objc2::{define_class, MainThreadOnly};
+use objc2_app_kit::NSWindowDelegate;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSFont, NSScrollView, NSSplitView, NSStackView, NSTextField,
@@ -23,6 +26,11 @@ pub struct MainWindow {
     split: Retained<NSSplitView>,
     library: Library,
     content: Retained<NSScrollView>,
+    /// Holds the summary or the display, whichever the run state calls for.
+    pane: Retained<NSView>,
+    pub display: Retained<crate::display::DisplayView>,
+    detached: Option<Retained<NSWindow>>,
+    _window_delegate: Retained<WindowDelegate>,
     status: Retained<NSTextField>,
     lights: Retained<NSStackView>,
     toast: Retained<NSTextField>,
@@ -56,8 +64,16 @@ impl MainWindow {
         let split = NSSplitView::initWithFrame(mtm.alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1180.0, 700.0)));
         split.setVertical(true);
         split.setDividerStyle(objc2_app_kit::NSSplitViewDividerStyle::Thin);
+        let display = crate::display::DisplayView::new(mtm);
+        let pane = NSView::new(mtm);
+        for v in [Retained::into_super(content.clone()), Retained::into_super(display.clone())] {
+            v.setTranslatesAutoresizingMaskIntoConstraints(false);
+            pane.addSubview(&v);
+            pin(&v, &pane);
+        }
+        display.setHidden(true);
         split.addSubview(&library.scroll);
-        split.addSubview(&content);
+        split.addSubview(&pane);
         split.setHoldingPriority_forSubviewAtIndex(260.0, 0);
 
         let status = label(mtm, "");
@@ -100,17 +116,71 @@ impl MainWindow {
         split.setPosition_ofDividerAtIndex(250.0, 0);
         window.center();
         window.setFrameAutosaveName(&ns("IRISMainWindow"));
+        window.setAcceptsMouseMovedEvents(true);
+        let window_delegate = WindowDelegate::new(mtm);
+        window.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*window_delegate)));
         Self {
             window,
             split,
             library,
             content,
+            pane,
+            display,
+            detached: None,
+            _window_delegate: window_delegate,
             status,
             lights,
             toast,
             _toolbar_delegate: delegate,
             last: None,
             library_hidden: false,
+        }
+    }
+
+    /// The display follows the controller: shown while a machine runs (in
+    /// its own window when detached), capture, full screen and scaling.
+    pub fn sync_display(&mut self, mtm: MainThreadMarker, app: &AppController) {
+        let running = app.session().is_running();
+        let d = app.display();
+        let display_view: &NSView = &self.display;
+        // Detached: the display moves to a window of its own.
+        if running && d.detached() && self.detached.is_none() {
+            let w = new_display_window(mtm);
+            display_view.removeFromSuperview();
+            w.setContentView(Some(display_view));
+            w.makeKeyAndOrderFront(None);
+            self.detached = Some(w);
+        } else if (!running || !d.detached()) && self.detached.is_some() {
+            if let Some(w) = self.detached.take() {
+                display_view.removeFromSuperview();
+                w.orderOut(None);
+            }
+            display_view.setTranslatesAutoresizingMaskIntoConstraints(false);
+            self.pane.addSubview(display_view);
+            pin(display_view, &self.pane);
+        }
+        let show_display = running && self.detached.is_none();
+        if self.display.isHidden() == show_display {
+            self.display.setHidden(!show_display);
+            self.content.setHidden(show_display);
+            if show_display {
+                self.window.makeFirstResponder(Some(&self.display));
+            }
+        }
+        self.display.set_captured(running && d.captured());
+        let (max, integer) = iris_gui_core::controller::display::scaling(app.prefs(), 1.0);
+        let filter = match app.prefs().display_filter {
+            iris_gui_core::controller::display::DisplayFilter::Auto => None,
+            iris_gui_core::controller::display::DisplayFilter::Nearest => Some(true),
+            iris_gui_core::controller::display::DisplayFilter::Linear => Some(false),
+        };
+        self.display.set_scaling(max, integer, filter);
+        self.display.set_overlay(mtm, app.display_overlay().as_deref());
+        // Full screen: the window that shows the display.
+        let w = self.detached.clone().unwrap_or_else(|| self.window.clone());
+        let is_full = w.styleMask().contains(NSWindowStyleMask::FullScreen);
+        if is_full != d.fullscreen() {
+            w.toggleFullScreen(None);
         }
     }
 
@@ -127,6 +197,7 @@ impl MainWindow {
     /// Bring every view in line with the controller. Views are set only when
     /// their value changed.
     pub fn refresh(&mut self, mtm: MainThreadMarker, app: &AppController) {
+        self.sync_display(mtm, app);
         self.library.refresh(&app.library());
         let title = app.selected().map(str::to_string).unwrap_or_else(|| t!("app-name"));
         if self.window.title().to_string() != title {
@@ -195,6 +266,73 @@ impl MainWindow {
             set_id(&v, &l.id);
             self.lights.addArrangedSubview(&v);
         }
+    }
+}
+
+fn pin(v: &NSView, to: &NSView) {
+    v.leadingAnchor().constraintEqualToAnchor(&to.leadingAnchor()).setActive(true);
+    v.trailingAnchor().constraintEqualToAnchor(&to.trailingAnchor()).setActive(true);
+    v.topAnchor().constraintEqualToAnchor(&to.topAnchor()).setActive(true);
+    v.bottomAnchor().constraintEqualToAnchor(&to.bottomAnchor()).setActive(true);
+}
+
+fn new_display_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
+    let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Miniaturizable | NSWindowStyleMask::Resizable;
+    // SAFETY: a standard window, kept by the main window while detached.
+    let w = unsafe {
+        NSWindow::initWithContentRect_styleMask_backing_defer(
+            mtm.alloc(),
+            NSRect::new(NSPoint::new(160.0, 160.0), NSSize::new(1282.0, 1024.0)),
+            style,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
+    // SAFETY: the main window keeps it.
+    unsafe { w.setReleasedWhenClosed(false) };
+    w.setTitle(&ns(&t!("tb-detach")));
+    w.setAcceptsMouseMovedEvents(true);
+    w
+}
+
+define_class!(
+    /// The main window's delegate: focus for the capture rules, full screen
+    /// the user left by other means.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "IRISWindowDelegate"]
+    pub struct WindowDelegate;
+
+    unsafe impl NSObjectProtocol for WindowDelegate {}
+
+    unsafe impl NSWindowDelegate for WindowDelegate {
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn became_key(&self, _n: &objc2_foundation::NSNotification) {
+            crate::app::display(iris_gui_core::controller::display::DisplayAction::Focus(true));
+        }
+
+        #[unsafe(method(windowDidResignKey:))]
+        fn resigned_key(&self, _n: &objc2_foundation::NSNotification) {
+            crate::app::display(iris_gui_core::controller::display::DisplayAction::Focus(false));
+        }
+
+        #[unsafe(method(windowDidEnterFullScreen:))]
+        fn entered_full(&self, _n: &objc2_foundation::NSNotification) {
+            crate::app::display(iris_gui_core::controller::display::DisplayAction::FullScreenChanged(true));
+        }
+
+        #[unsafe(method(windowDidExitFullScreen:))]
+        fn exited_full(&self, _n: &objc2_foundation::NSNotification) {
+            crate::app::display(iris_gui_core::controller::display::DisplayAction::FullScreenChanged(false));
+        }
+    }
+);
+
+impl WindowDelegate {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<WindowDelegate>().set_ivars(());
+        // SAFETY: NSObject's plain init.
+        unsafe { objc2::msg_send![super(this), init] }
     }
 }
 

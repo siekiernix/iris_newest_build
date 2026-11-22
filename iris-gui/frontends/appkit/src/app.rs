@@ -105,6 +105,10 @@ fn start(mtm: MainThreadMarker) {
     let wake = Arc::new(MacWake::default());
     let app = AppController::launch(wake.clone());
     let win = MainWindow::new(mtm);
+    // Frames wake the shell like any event: the sink calls the same wake.
+    let (head0, head1) = app.session().frame_sinks();
+    head0.set_wake(wake.clone());
+    head1.set_wake(wake.clone());
     win.window.makeKeyAndOrderFront(None);
     let empty = app.is_empty();
     SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false }));
@@ -154,11 +158,24 @@ pub fn script_step() {
     schedule_script_step();
 }
 
-/// A wake: drain the controller, carry out what it asks, redraw.
+/// A wake: drain the controller, carry out what it asks, present a new
+/// frame, redraw.
 pub fn tick() {
     let fx = with(|s| {
         s.wake.ticked();
-        s.app.tick()
+        let fx = s.app.tick();
+        for e in s.app.take_session_events() {
+            if e == iris_gui_core::controller::session::SessionEvent::Started {
+                s.win.display.clear();
+            }
+        }
+        if s.app.session().is_running() {
+            let (sink, _) = s.app.session().frame_sinks();
+            if s.win.display.take(sink) {
+                s.win.display.draw();
+            }
+        }
+        fx
     });
     match fx {
         Some(fx) => {
@@ -213,6 +230,32 @@ pub fn command(id: &str) {
         shell_command(c);
     }
     refresh();
+}
+
+/// Input and capture for the display: applied at once, without a full
+/// redraw (motion arrives many times a second); the view follows capture.
+pub fn display(action: iris_gui_core::controller::display::DisplayAction) {
+    let m = mtm();
+    let fx = with(|s| {
+        let before = (s.app.display().captured(), s.app.display().fullscreen(), s.app.display().detached());
+        let fx = s.app.apply(AppAction::Display(action));
+        let after = (s.app.display().captured(), s.app.display().fullscreen(), s.app.display().detached());
+        if before != after {
+            s.win.sync_display(m, &s.app);
+        }
+        fx
+    });
+    if let Some(fx) = fx {
+        run_effects(fx);
+    }
+}
+
+/// A key pressed while the display is not captured: the key map decides.
+pub fn shortcut(key: iris_gui_core::controller::keys::Key, mods: iris_gui_core::controller::keys::Mods) {
+    let keys = iris_gui_core::controller::keys::KeyMap::default();
+    if let Some(cmd) = keys.lookup(key, mods) {
+        command(iris_gui_core::controller::commands::id_of(cmd));
+    }
 }
 
 /// Whether a menu or toolbar item with this id is enabled.

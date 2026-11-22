@@ -15,7 +15,8 @@ pub use crate::model::framebuffer::{Frame, FrameSink};
 
 use super::keys::{CaptureChords, ModKey};
 use super::Effect;
-use crate::model::settings::{DisplayFilter, DisplayMode, GuiSettings};
+pub use crate::model::settings::{DisplayFilter, DisplayMode};
+use crate::model::settings::GuiSettings;
 
 /// How long the window must stay unfocused before a capture is released. Long
 /// enough to ride out macOS's focus flicker around cursor grabs, short enough
