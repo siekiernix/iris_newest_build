@@ -572,7 +572,8 @@ impl SettingsController {
             SettingsAction::Disk(edit) => match edit {
                 DiskEdit::Add(kind) => {
                     let p = cfg.machine.profile;
-                    let free = (0..=p.max_scsi_id()).find(|id| hardware::scsi_key(cfg, 0, *id).is_none() && *id != 7);
+                    // ID 0 is the controller itself; targets take 1 up to the bus's last id.
+                    let free = (1..=p.max_scsi_id()).find(|id| hardware::scsi_key(cfg, 0, *id).is_none());
                     match free {
                         Some(id) => {
                             let mut dev = ScsiDeviceConfig { kind_field: kind, cdrom: kind == ScsiKind::Cdrom, ..Default::default() };
@@ -862,6 +863,9 @@ mod tests {
         c.apply(SettingsAction::Disk(DiskEdit::Add(ScsiKind::Cdrom)), &mut cfg, None);
         assert!(cfg.scsi.values().any(|d| d.is_cdrom()));
         let key = *cfg.scsi.keys().next().unwrap();
+        // ID 0 is the controller: the first target goes at 1, and the config stays valid.
+        assert_eq!(key, 1);
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
         c.apply(SettingsAction::Disk(DiskEdit::Remove(key)), &mut cfg, None);
         assert!(cfg.scsi.is_empty());
         let (changed, _) = c.apply(SettingsAction::ApplyToml("made_up = true".into()), &mut cfg, None);

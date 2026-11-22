@@ -1346,6 +1346,8 @@ impl App {
         {
             use iris_gui_core::controller::session::{LightState, LightTarget};
             let bar = self.app.status_bar();
+            // A click runs what the light stands for (the controller decides).
+            let mut clicked: Option<String> = None;
             ui.horizontal(|ui| {
                 for light in bar.lights.iter().filter(|l| matches!(l.target, LightTarget::Disk { .. } | LightTarget::CdRom { .. } | LightTarget::Audio)) {
                     let color = match light.state {
@@ -1362,9 +1364,20 @@ impl App {
                     };
                     let mut text = format!("\u{2022}{tag}");
                     if let Some(b) = &light.badge { text.push_str(&format!(" {b}")); }
-                    ui.label(RichText::new(text).small().color(color)).tip(light.tooltip.clone());
+                    let clickable = self.app.light_command(&light.id).is_some();
+                    let label = egui::Label::new(RichText::new(text).small().color(color));
+                    let r = ui.add(if clickable { label.sense(egui::Sense::click()) } else { label }).tip(light.tooltip.clone());
+                    if clickable && r.clicked() {
+                        clicked = Some(light.id.clone());
+                    }
                 }
             });
+            if let Some(id) = clicked {
+                // Only the effects: egui has no disk browser window yet, so a
+                // disk light's BrowseDisk is left for the AppKit shell.
+                let routed = self.app.command(&id);
+                self.run_effects(routed.effects);
+            }
         }
         if running && self.fb_scale > 0.0 {
             // How magnified the emulated display currently is (1× = native).

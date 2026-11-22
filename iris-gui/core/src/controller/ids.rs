@@ -63,6 +63,8 @@ pub mod item {
     pub const DELETE_STATE: &str = "state.delete:";
     /// Followed by the disk's `[scsi.KEY]` key.
     pub const BROWSE_DISK: &str = "browse:";
+    /// Followed by the CD-ROM's `[scsi.KEY]` key.
+    pub const INSERT_DISC: &str = "disc.insert:";
 
     pub fn id(prefix: &str, item: impl std::fmt::Display) -> String {
         format!("{prefix}{item}")

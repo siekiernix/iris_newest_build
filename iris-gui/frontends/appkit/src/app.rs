@@ -349,7 +349,13 @@ fn shell_command(c: ShellCommand) {
             with(|s| s.win.toggle_library());
         }
         ShellCommand::CloseWindow => {
-            with(|s| s.win.window.performClose(None));
+            // The front window: the settings window as well as the main one.
+            match NSApplication::sharedApplication(mtm()).keyWindow() {
+                Some(w) => w.performClose(None),
+                None => {
+                    with(|s| s.win.window.performClose(None));
+                }
+            }
         }
         ShellCommand::About => {
             let text = iris_gui_core::controller::debug::diagnostics_text();

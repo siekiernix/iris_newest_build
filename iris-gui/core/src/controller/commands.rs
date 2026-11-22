@@ -133,8 +133,14 @@ impl AppController {
     /// Whether the command `id` can run now, and if not why.
     pub fn command_enabled(&self, id: &str) -> Enabled {
         use super::ids::item;
+        if let Some(c) = self.light_command(id) {
+            return self.command_enabled(&c);
+        }
         if id.starts_with(item::BROWSE_DISK) {
             return self.command_enabled(tb::BROWSE_FILES);
+        }
+        if id.starts_with(item::INSERT_DISC) {
+            return self.command_enabled(tb::INSERT_DISC);
         }
         if let Some(name) = id.strip_prefix(item::RESTORE_STATE) {
             return self.session_enabled(&SessionAction::RestoreState(name.into()));
@@ -173,8 +179,33 @@ impl AppController {
         }
     }
 
+    /// The command a status-bar light's id stands for: a disk opens the
+    /// browser, a CD-ROM asks for a disc, network opens the check, serial the
+    /// console, capture toggles capture. `None` for other ids and for lights
+    /// that only show something.
+    pub fn light_command(&self, id: &str) -> Option<String> {
+        use super::ids::item;
+        use super::session::LightTarget as L;
+        if !id.starts_with("status.") {
+            return None;
+        }
+        let bar = self.status_bar();
+        let light = bar.lights.iter().find(|l| l.id == id)?;
+        Some(match light.target {
+            L::Disk { key } => item::id(item::BROWSE_DISK, key),
+            L::CdRom { key } => item::id(item::INSERT_DISC, key),
+            L::Network => menu::CHECK_NETWORK.to_string(),
+            L::Serial => tb::SERIAL_CONSOLE.to_string(),
+            L::Capture => menu::CAPTURE.to_string(),
+            L::Audio | L::Scale => return None,
+        })
+    }
+
     /// Run the command `id` (a toolbar item, a menu item or a key-map chord).
     pub fn command(&mut self, id: &str) -> Routed {
+        if let Some(c) = self.light_command(id) {
+            return self.command(&c);
+        }
         let mut r = Routed::default();
         if let Enabled::No(why) = self.command_enabled(id) {
             r.effects.push(Effect::Toast(why));
@@ -202,6 +233,10 @@ impl AppController {
         }
         if let Some(key) = id.strip_prefix(item::BROWSE_DISK).and_then(|k| k.parse().ok()) {
             r.shell = Some(ShellCommand::BrowseDisk(key));
+            return r;
+        }
+        if let Some(key) = id.strip_prefix(item::INSERT_DISC).and_then(|k| k.parse().ok()) {
+            r.effects = self.apply(AppAction::Session(SessionAction::InsertDisc { key }));
             return r;
         }
         let action = match id {

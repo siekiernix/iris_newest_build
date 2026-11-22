@@ -8,14 +8,14 @@ use objc2::{define_class, MainThreadOnly};
 use objc2_app_kit::NSWindowDelegate;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSFont, NSScrollView, NSSplitView, NSStackView, NSTextField,
+    NSBackingStoreType, NSButton, NSColor, NSFont, NSScrollView, NSSplitView, NSStackView, NSTextField,
     NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
 use iris_gui_core::controller::app::AppController;
 use iris_gui_core::controller::ids;
 use iris_gui_core::controller::overview::Overview;
-use iris_gui_core::controller::session::LightState;
+use iris_gui_core::controller::session::{DeviceLight, LightState};
 
 use crate::library::Library;
 use crate::toolbar;
@@ -33,6 +33,8 @@ pub struct MainWindow {
     _window_delegate: Retained<WindowDelegate>,
     status: Retained<NSTextField>,
     lights: Retained<NSStackView>,
+    light_buttons: Vec<Retained<NSButton>>,
+    last_lights: Vec<DeviceLight>,
     toast: Retained<NSTextField>,
     _toolbar_delegate: Retained<toolbar::Delegate>,
     last: Option<Option<Overview>>,
@@ -130,6 +132,8 @@ impl MainWindow {
             _window_delegate: window_delegate,
             status,
             lights,
+            light_buttons: Vec::new(),
+            last_lights: Vec::new(),
             toast,
             _toolbar_delegate: delegate,
             last: None,
@@ -240,33 +244,61 @@ impl MainWindow {
         if self.status.stringValue().to_string() != s {
             self.status.setStringValue(&ns(&s));
         }
-        // The lights: rebuilt each refresh (a handful of small views).
-        for v in self.lights.arrangedSubviews().iter() {
-            self.lights.removeArrangedSubview(&v);
-            v.removeFromSuperview();
+        // The lights: one borderless button each, made when the set of
+        // lights changes and restyled in place otherwise, so a click is not
+        // lost to a refresh. A click runs the command the light stands for
+        // (`AppController::light_command`), routed by its id.
+        let same = self.light_buttons.len() == bar.lights.len()
+            && self.last_lights.iter().zip(&bar.lights).all(|(a, b)| a.id == b.id);
+        if !same {
+            for v in self.lights.arrangedSubviews().iter() {
+                self.lights.removeArrangedSubview(&v);
+                v.removeFromSuperview();
+            }
+            self.light_buttons.clear();
+            self.last_lights.clear();
+            for l in &bar.lights {
+                let b = crate::ui::button(mtm, "", &l.id);
+                b.setBordered(false);
+                self.lights.addArrangedSubview(&b);
+                self.light_buttons.push(b);
+            }
         }
-        for l in &bar.lights {
-            let img = crate::glyphs::icon(l.icon, &l.tooltip);
-            let v: Retained<NSView> = match img {
-                Some(img) => {
-                    let iv = objc2_app_kit::NSImageView::imageViewWithImage(&img, mtm);
-                    let color = match l.state {
-                        LightState::Off => NSColor::tertiaryLabelColor(),
-                        LightState::Idle => NSColor::secondaryLabelColor(),
-                        LightState::Reading | LightState::Active => NSColor::systemGreenColor(),
-                        LightState::Writing => NSColor::systemOrangeColor(),
-                        LightState::Fault => NSColor::systemRedColor(),
-                    };
-                    iv.setContentTintColor(Some(&color));
-                    Retained::into_super(Retained::into_super(iv))
-                }
-                None => as_view(&label(mtm, "\u{2022}")),
-            };
-            v.setToolTip(Some(&ns(&l.tooltip)));
-            set_id(&v, &l.id);
-            self.lights.addArrangedSubview(&v);
+        for (i, l) in bar.lights.iter().enumerate() {
+            let enabled = app
+                .light_command(&l.id)
+                .is_some_and(|c| app.command_enabled(&c) == iris_gui_core::controller::Enabled::Yes);
+            if self.last_lights.get(i) == Some(l) && self.light_buttons[i].isEnabled() == enabled {
+                continue;
+            }
+            style_light(&self.light_buttons[i], l, enabled);
         }
+        self.last_lights = bar.lights.clone();
     }
+}
+
+fn style_light(b: &NSButton, l: &DeviceLight, enabled: bool) {
+    match crate::glyphs::icon(l.icon, &l.tooltip) {
+        Some(img) => b.setImage(Some(&img)),
+        None => b.setTitle(&ns("\u{2022}")),
+    }
+    if let Some(badge) = &l.badge {
+        b.setTitle(&ns(badge));
+        b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
+    } else if b.image().is_some() {
+        b.setTitle(&ns(""));
+        b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
+    }
+    let color = match l.state {
+        LightState::Off => NSColor::tertiaryLabelColor(),
+        LightState::Idle => NSColor::secondaryLabelColor(),
+        LightState::Reading | LightState::Active => NSColor::systemGreenColor(),
+        LightState::Writing => NSColor::systemOrangeColor(),
+        LightState::Fault => NSColor::systemRedColor(),
+    };
+    b.setContentTintColor(Some(&color));
+    b.setEnabled(enabled);
+    b.setToolTip(Some(&ns(&l.tooltip)));
 }
 
 fn pin(v: &NSView, to: &NSView) {

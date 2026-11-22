@@ -1002,6 +1002,32 @@ mod tests {
     }
 
     #[test]
+    fn a_light_runs_the_command_it_stands_for() {
+        use super::super::commands::ShellCommand;
+        use super::super::session::LightTarget;
+        let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
+        let root = TempRoot::new("lights");
+        let mut app = app_in(&root, &["alpha"]);
+        let disk = root.0.join("disk.img");
+        std::fs::write(&disk, [0u8; 512]).unwrap();
+        app.config_mut().scsi.insert(1, iris::config::ScsiDeviceConfig { path: disk.to_string_lossy().into(), ..Default::default() });
+        app.config_mut().scsi.insert(4, iris::config::ScsiDeviceConfig { cdrom: true, ..Default::default() });
+        app.apply(AppAction::ConfigEdited);
+        let bar = app.status_bar();
+        let id_of = |t: LightTarget| bar.lights.iter().find(|l| l.target == t).map(|l| l.id.clone()).expect("light");
+        let disk_light = id_of(LightTarget::Disk { key: 1 });
+        let cd_light = id_of(LightTarget::CdRom { key: 4 });
+        assert_eq!(app.light_command(&disk_light).as_deref(), Some("browse:1"));
+        assert_eq!(app.light_command(&cd_light).as_deref(), Some("disc.insert:4"));
+        assert_eq!(app.command(&disk_light).shell, Some(ShellCommand::BrowseDisk(1)));
+        // A CD-ROM light asks for a disc.
+        let fx = app.command(&cd_light).effects;
+        assert!(fx.iter().any(|e| matches!(e, Effect::PickFile(_))), "{fx:?}");
+        assert_eq!(app.light_command("toolbar.power-on"), None);
+        app.shutdown();
+    }
+
+    #[test]
     fn quitting_with_nothing_pending_saves_and_quits() {
         let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
         let root = TempRoot::new("quit");
