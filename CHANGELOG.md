@@ -42,6 +42,17 @@ hashes are given where a change is easiest to understand by reading the commit.
   at the next hardware interrupt, on every machine. On the Tezro, quake's
   timedemo no longer freezes for up to a second at a time.
 
+### iris-gui
+
+- A machine can be duplicated from the library: its settings and small files
+  are copied and its disk images shared.
+- The status bar shows disk, CD-ROM and audio activity; clicking a CD-ROM's
+  light asks for a disc.
+- New on macOS: **IRIS Preview.app**, a native AppKit front end beside
+  IRIS.app that shares its machines. It adds a disk browser that exports,
+  imports and edits files on a stopped machine's EFS and XFS disks. It is a
+  preview; see `iris-gui-README.md`.
+
 ### jitv2 flushes
 
 - Under jitv2, a single-processor machine no longer hangs when the CPU runs out

@@ -301,6 +301,32 @@ PCAP-mode NFS IP).
 
 ---
 
+### Native macOS preview
+
+`IRIS Preview.app` is a second macOS front end, written with AppKit instead
+of egui, that shares the same machines, settings and preferences (it reads
+and writes the same folders). It is a preview: use one or the other at a
+time, since only one machine runs at once. It has the library, the summary
+page, the guest display (Metal), the machine settings, the new-machine
+window, saved states, the serial console, Check Networking, the benchmark,
+the camera test and Preferences, with SF Symbols and the system's light and
+dark appearance.
+
+It also has a **disk browser**: the folder button next to a disk on the
+summary page, Browse Files in the toolbar, or a click on a disk's status
+light opens the disk of a stopped machine. It shows the partitions and their
+files, exports files, folders and `.tar`/`.tar.gz` archives, imports files
+and folders (unpacking `.tardist` and tar archives unless told not to), and
+edits text files, names, permissions and owners on EFS and XFS. CD-ROMs open
+read-only. XFS opens read-only until you choose Edit Anyway, because the
+browser cannot tell whether the filesystem's log still needs replaying: shut
+IRIX down cleanly first. Moving files between folders and drag-and-drop
+import are not there yet.
+
+Build and run it from a checkout with `cargo run -p iris-gui-appkit`, or
+make the app with `iris-gui/frontends/appkit/scripts/bundle.sh` (see the
+script's `--help`).
+
 ## 4. Storage model
 
 ### Where things live
@@ -518,7 +544,10 @@ iris/
     ├── scripts/check-boundaries.sh   layer rules (see below)
     ├── core/          iris-gui-core: the model and controllers, no UI toolkit
     │   └── src/
-    │       ├── controller/    Controller trait, Effect, widget ids, shortcuts, icons
+    │       ├── controller/    Controller trait, Effect, widget ids, shortcuts, icons,
+    │       │                  and one controller per task: app, session, display,
+    │       │                  settings, preferences, new machine, disk browser,
+    │       │                  network, serial, bench, camera, debug
     │       └── model/
     │           ├── handle.rs          EmulatorHandle: worker thread, Cmd/Evt channels
     │           ├── framebuffer.rs     CaptureRenderer + FrameSink (GfxDisplay → shell texture)
@@ -535,6 +564,8 @@ iris/
     │           ├── capture_access.rs  per-OS packet-capture permission (PCAP)
     │           ├── macos_sandbox.rs   security-scoped bookmarks (App Store)
     │           └── single_instance.rs previous-instance reclaim
+    ├── frontends/appkit/   iris-gui-appkit: the native macOS shell (binary iris-appkit)
+    │   └── scripts/bundle.sh   builds "IRIS Preview.app" and its DMG
     └── src/           the egui shell
         ├── main.rs            App: control column, menus, modals, update loop
         ├── input.rs           capture, egui → PS/2 keyboard+mouse pump
@@ -552,9 +583,12 @@ iris/
 ```
 
 The front ends are moving onto shared controllers: `iris-gui-core` holds the
-model and one controller per task, and a shell (egui today, native AppKit
-next) only draws, turns input into controller actions and carries out the
+model and one controller per task, and a shell (egui, and the native AppKit
+preview) only draws, turns input into controller actions and carries out the
 effects a controller asks for (file pickers, confirmations, the clipboard).
+Forms such as the machine settings, the new-machine dialog and the
+preferences are lists of fields the controller builds; a shell draws each
+field kind once and reports a control by its id.
 `iris-gui/scripts/check-boundaries.sh` fails when the core names a UI toolkit
 or a controller spawns a thread, and counts what the shells still reach past
 the controllers for.
