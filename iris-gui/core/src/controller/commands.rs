@@ -48,10 +48,6 @@ pub enum ShellCommand {
     Settings,
     /// Show the saved-states list.
     SavedStates,
-    /// Open the disk browser (the shell asks which disk when there are several).
-    BrowseFiles,
-    /// Open the disk browser on the disk or CD-ROM at `[scsi.KEY]`.
-    BrowseDisk(u8),
     NewMachine,
     About,
     AppSettings,
@@ -232,7 +228,7 @@ impl AppController {
             return r;
         }
         if let Some(key) = id.strip_prefix(item::BROWSE_DISK).and_then(|k| k.parse().ok()) {
-            r.shell = Some(ShellCommand::BrowseDisk(key));
+            r.effects = self.apply(AppAction::OpenBrowser { key });
             return r;
         }
         if let Some(key) = id.strip_prefix(item::INSERT_DISC).and_then(|k| k.parse().ok()) {
@@ -252,10 +248,7 @@ impl AppController {
                 let key = self.config().scsi.iter().find(|(_, d)| d.is_cdrom()).map(|(k, _)| *k);
                 key.map(|key| AppAction::Session(SessionAction::InsertDisc { key }))
             }
-            tb::BROWSE_FILES => {
-                r.shell = Some(ShellCommand::BrowseFiles);
-                None
-            }
+            tb::BROWSE_FILES => Some(AppAction::BrowseFiles),
             tb::DETACH_DISPLAY => Some(display(DisplayAction::ToggleDetached)),
             tb::FULL_SCREEN => Some(display(DisplayAction::ToggleFullScreen)),
             tb::SERIAL_CONSOLE => Some(AppAction::Serial(SerialAction::Open)),

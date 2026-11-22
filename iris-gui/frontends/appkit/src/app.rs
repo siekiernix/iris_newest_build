@@ -29,6 +29,7 @@ struct Shell {
     may_quit: bool,
     settings: Option<crate::settings::SettingsWindow>,
     new_machine: Option<crate::new_machine::NewMachineWindow>,
+    browser: Option<crate::browser::BrowserWindow>,
 }
 
 thread_local! {
@@ -113,13 +114,14 @@ fn start(mtm: MainThreadMarker) {
     head1.set_wake(wake.clone());
     win.window.makeKeyAndOrderFront(None);
     let empty = app.is_empty();
-    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None, new_machine: None }));
+    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None, new_machine: None, browser: None }));
     NSApplication::sharedApplication(mtm).activate();
     refresh();
     tick();
     // A test script: command ids, separated by `;`, one every few seconds
     // (`IRIS_APPKIT_SCRIPT_DELAY`, default 3). "select:NAME" selects a machine,
-    // "page:ID" shows a settings section, "set:ID=VALUE" reports a settings control.
+    // "page:ID" shows a settings section, "set:ID=VALUE" reports a settings control,
+    // "open:N" and "pick:N,M" open and select rows of the disk browser.
     if let Ok(script) = std::env::var("IRIS_APPKIT_SCRIPT") {
         SCRIPT.with(|q| q.borrow_mut().extend(script.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty())));
         schedule_script_step();
@@ -169,6 +171,10 @@ pub fn script_step() {
         if let Some(value) = value {
             setting(id.to_string(), value);
         }
+    } else if let Some(row) = step.strip_prefix("open:").and_then(|r| r.parse().ok()) {
+        browser_activate(row);
+    } else if let Some(rows) = step.strip_prefix("pick:") {
+        browser_select(rows.split(',').filter_map(|r| r.parse().ok()).collect());
     } else if let Some(page) = step.strip_prefix("page:") {
         setting(format!("settings-page:{page}"), iris_gui_core::controller::settings::Value::Bool(true));
     } else {
@@ -213,6 +219,22 @@ fn refresh() {
         if let Some(w) = &mut s.settings {
             w.refresh(m, &s.app);
         }
+        // The browser window is shown exactly while the controller has a browser.
+        match (s.app.browser(), &mut s.browser) {
+            (Some(b), Some(w)) => w.refresh(m, b),
+            (Some(b), None) => {
+                let mut w = crate::browser::BrowserWindow::new(m);
+                w.refresh(m, b);
+                w.window.makeKeyAndOrderFront(None);
+                s.browser = Some(w);
+            }
+            (None, Some(_)) => {
+                if let Some(mut w) = s.browser.take() {
+                    w.close();
+                }
+            }
+            (None, None) => {}
+        }
         s.app.autosave_due_in()
     })
     .flatten();
@@ -231,6 +253,10 @@ fn refresh() {
 pub fn setting(id: String, value: iris_gui_core::controller::settings::Value) {
     if id.starts_with("new-machine.") {
         return new_machine_control(id, value);
+    }
+    if id.starts_with("browser.") {
+        let on = matches!(value, iris_gui_core::controller::settings::Value::Bool(true));
+        return browser_control(&id, on);
     }
     enum Then {
         Page,
@@ -352,8 +378,41 @@ fn run_effects(fx: Vec<Effect>) {
     }
 }
 
+/// A browser control: its action, with the editor's text first for Save and Close.
+fn browser_control(id: &str, value: bool) {
+    use iris_gui_core::controller::disk_browser::{action_for, BrowserAction};
+    let Some(action) = action_for(id, value) else { return };
+    if matches!(action, BrowserAction::EditorSave | BrowserAction::EditorClose) {
+        if let Some(text) = with(|s| s.browser.as_ref().and_then(|w| w.editor_text())).flatten() {
+            let changed = with(|s| s.app.browser().and_then(|b| b.editor()).is_some_and(|e| e.text != text)).unwrap_or(false);
+            if changed {
+                dispatch(AppAction::Browser(BrowserAction::EditorChanged(text)));
+            }
+        }
+    }
+    dispatch(AppAction::Browser(action));
+}
+
+/// Rows selected in the browser's table.
+pub fn browser_select(rows: Vec<usize>) {
+    dispatch(AppAction::Browser(iris_gui_core::controller::disk_browser::BrowserAction::Select(rows)));
+}
+
+/// A row of the browser's table was double-clicked.
+pub fn browser_activate(row: usize) {
+    dispatch(AppAction::Browser(iris_gui_core::controller::disk_browser::BrowserAction::Activate(row)));
+}
+
+/// The browser window's close button.
+pub fn close_browser() {
+    dispatch(AppAction::CloseBrowser);
+}
+
 /// A toolbar item, menu item or button with this command id was used.
 pub fn command(id: &str) {
+    if id.starts_with("browser.") {
+        return browser_control(id, false);
+    }
     let Some(routed) = with(|s| s.app.command(id)) else { return };
     run_effects(routed.effects);
     if let Some(c) = routed.shell {
@@ -427,9 +486,7 @@ fn shell_command(c: ShellCommand) {
             let states = with(|s| s.app.saved_states()).unwrap_or_default();
             crate::menu::saved_states(mtm(), &states);
         }
-        ShellCommand::BrowseFiles
-        | ShellCommand::BrowseDisk(_)
-        | ShellCommand::AppSettings
+        ShellCommand::AppSettings
         | ShellCommand::Benchmark
         | ShellCommand::Diagnostics => {
             with(|s| s.win.toast(&t!("appkit-not-yet")));

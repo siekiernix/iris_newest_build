@@ -57,7 +57,7 @@ pub fn stack(mtm: MainThreadMarker, views: &[Retained<NSView>], vertical: bool, 
 }
 
 /// Make `c` report its value to `setting:` under `id`.
-fn wire(c: &NSControl, id: &str) {
+pub fn wire(c: &NSControl, id: &str) {
     let t = target(MainThreadMarker::from(c));
     // SAFETY: the target is never dropped; `setting:` takes the sender.
     unsafe {
@@ -78,7 +78,7 @@ fn popup(mtm: MainThreadMarker, id: &str, options: &[String], selected: usize) -
     p
 }
 
-fn checkbox(mtm: MainThreadMarker, id: &str, title: &str, on: bool) -> Retained<NSButton> {
+pub fn checkbox(mtm: MainThreadMarker, id: &str, title: &str, on: bool) -> Retained<NSButton> {
     let b = NSButton::new(mtm);
     b.setButtonType(NSButtonType::Switch);
     b.setTitle(&ns(title));

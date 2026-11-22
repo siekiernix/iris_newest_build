@@ -14,7 +14,7 @@ use iris::config::MachineConfig;
 use super::profile::{traits, Family, MachineIcon};
 use super::session::SessionController;
 
-use super::{Answer, ConfirmSpec, Controller, Effect, Enabled, TextSpec};
+use super::{Answer, ChoiceSpec, ConfirmSpec, Controller, Effect, Enabled, TextSpec};
 use crate::model::job::Notify;
 use crate::model::machines;
 use crate::model::settings::{GuiSettings, LibraryFolder};
@@ -26,6 +26,8 @@ pub const RENAME_MACHINE: &str = "app.rename-machine";
 pub const DELETE_MACHINE: &str = "app.delete-machine";
 pub const NEW_FOLDER: &str = "app.new-folder";
 pub const RENAME_FOLDER: &str = "app.rename-folder";
+/// Which disk Browse Files opens, when the machine has several.
+pub const BROWSE_WHICH: &str = "app.browse-which";
 
 /// What the user asked the application to do.
 #[derive(Debug, Clone)]
@@ -76,6 +78,14 @@ pub enum AppAction {
     Display(super::display::DisplayAction),
     /// A session action: power, saved states, discs, disks.
     Session(super::session::SessionAction),
+    /// Open the disk browser on `[scsi.KEY]` of the selected machine.
+    OpenBrowser { key: u8 },
+    /// Open the disk browser, asking which disk when there are several.
+    BrowseFiles,
+    /// An action in the open disk browser.
+    Browser(super::disk_browser::BrowserAction),
+    /// Close the disk browser (cancels its job).
+    CloseBrowser,
     Answer(Answer),
 }
 
@@ -124,6 +134,8 @@ pub struct AppController {
     serial: super::serial::SerialConsoleController,
     pub(crate) network: super::network::NetworkController,
     camera: super::camera::CameraTestController,
+    /// The disk browser, while its window is open.
+    browser: Option<super::disk_browser::DiskBrowserController>,
     notify: Arc<dyn Notify>,
     /// Problems found the last time the library was checked, by machine.
     problems: std::collections::BTreeMap<String, String>,
@@ -198,6 +210,7 @@ impl AppController {
             serial: Default::default(),
             network: super::network::NetworkController::new(),
             camera: Default::default(),
+            browser: None,
             notify,
             problems: Default::default(),
             pending_machine: None,
@@ -291,6 +304,62 @@ impl AppController {
     /// The selected machine's folder.
     pub fn machine_dir(&self) -> Option<PathBuf> {
         self.selected().and_then(|n| self.prefs.machine_dir(n).ok())
+    }
+
+    /// The disk browser, while it is open. A shell shows its window exactly
+    /// while this is `Some`.
+    pub fn browser(&self) -> Option<&super::disk_browser::DiskBrowserController> {
+        self.browser.as_ref()
+    }
+
+    /// The selected machine's disks and CD-ROMs the browser can open, by key.
+    pub fn browse_targets(&self) -> Vec<(u8, super::disk_browser::BrowseTarget)> {
+        let (Some(name), Some(dir)) = (self.selected(), self.machine_dir()) else { return Vec::new() };
+        let mut keys: Vec<u8> = self.cfg.scsi.keys().copied().collect();
+        keys.sort();
+        keys.into_iter()
+            .filter_map(|key| {
+                let d = &self.cfg.scsi[&key];
+                if d.path.trim().is_empty() || !(d.kind() == iris::config::ScsiKind::Disk || d.is_cdrom()) {
+                    return None;
+                }
+                let id = crate::model::hardware::scsi_name(&self.cfg, key);
+                let label = if d.is_cdrom() { t!("browser-label-cdrom", id = id) } else { t!("browser-label-disk", id = id) };
+                let path = machines::resolve(&dir, &d.path).to_string_lossy().into_owned();
+                Some((key, super::disk_browser::BrowseTarget { machine: name.to_string(), label, path, cdrom: d.is_cdrom(), overlay: d.overlay }))
+            })
+            .collect()
+    }
+
+    fn open_browser(&mut self, key: u8, fx: &mut Vec<Effect>) {
+        if let Enabled::No(why) = self.command_enabled(super::ids::toolbar::BROWSE_FILES) {
+            fx.push(Effect::Toast(why));
+            return;
+        }
+        let Some((_, target)) = self.browse_targets().into_iter().find(|(k, _)| *k == key) else {
+            fx.push(Effect::Toast(t!("browser-no-disks")));
+            return;
+        };
+        if !self.close_browser(fx) {
+            return;
+        }
+        // Edits must reach the file the machine boots from.
+        self.flush(fx);
+        let running = self.session.is_running();
+        self.browser = Some(super::disk_browser::DiskBrowserController::open(target, running, self.notify.clone()));
+    }
+
+    /// Close the browser; `false` (with a toast) while it is writing.
+    fn close_browser(&mut self, fx: &mut Vec<Effect>) -> bool {
+        if let Some(b) = &mut self.browser {
+            if b.writing() {
+                fx.push(Effect::Toast(t!("browser-busy")));
+                return false;
+            }
+            b.close();
+        }
+        self.browser = None;
+        true
     }
 
     /// Whether the library can change now (select, rename, delete, create):
@@ -418,6 +487,9 @@ impl AppController {
 
     fn select(&mut self, name: &str, fx: &mut Vec<Effect>) {
         if !self.guard(fx) {
+            return;
+        }
+        if self.selected() != Some(name) && !self.close_browser(fx) {
             return;
         }
         if self.is_dirty() && !self.flush(fx) {
@@ -800,7 +872,14 @@ impl Controller for AppController {
                 }
             }
             AppAction::RequestQuit => self.request_quit(&mut fx),
-            AppAction::Session(a) => self.session_apply(a, &mut fx),
+            AppAction::Session(a) => {
+                use super::session::SessionAction as S;
+                // A running guest owns its disks: the browser lets go first.
+                if matches!(a, S::PowerOn | S::RestoreState(_)) && !self.close_browser(&mut fx) {
+                    return fx;
+                }
+                self.session_apply(a, &mut fx)
+            }
             AppAction::Camera(a) => self.camera.apply(a, &self.cfg),
             AppAction::Network(a) => self.network_apply(a, &mut fx),
             AppAction::Serial(a) => self.serial.apply(a, &self.cfg, self.notify.clone()),
@@ -832,7 +911,45 @@ impl Controller for AppController {
                 let per_line = self.cfg.mouse_scroll_pixels_per_line;
                 fx.extend(self.display.apply(a, guest, &mut self.prefs, per_line));
             }
+            AppAction::OpenBrowser { key } => self.open_browser(key, &mut fx),
+            AppAction::BrowseFiles => {
+                let targets = self.browse_targets();
+                match targets.len() {
+                    0 => fx.push(Effect::Toast(t!("browser-no-disks"))),
+                    1 => self.open_browser(targets[0].0, &mut fx),
+                    n => {
+                        let mut choices: Vec<String> = targets.iter().map(|(_, t)| t.label.clone()).collect();
+                        choices.push(t!("common-cancel"));
+                        fx.push(Effect::Choose(ChoiceSpec {
+                            purpose: BROWSE_WHICH,
+                            title: t!("browser-which-title"),
+                            message: String::new(),
+                            choices,
+                            dismiss: n,
+                            default: Some(0),
+                            destructive: Vec::new(),
+                        }));
+                    }
+                }
+            }
+            AppAction::Browser(a) => {
+                if let Some(b) = &mut self.browser {
+                    fx.extend(b.apply(a));
+                }
+            }
+            AppAction::CloseBrowser => {
+                self.close_browser(&mut fx);
+            }
             AppAction::Answer(a) => {
+                if a.purpose().starts_with("browser.") {
+                    return self.apply(AppAction::Browser(super::disk_browser::BrowserAction::Answer(a)));
+                }
+                if let Answer::Chose { purpose: BROWSE_WHICH, index } = a {
+                    if let Some((key, _)) = self.browse_targets().get(index) {
+                        self.open_browser(*key, &mut fx);
+                    }
+                    return fx;
+                }
                 if a.purpose().starts_with("network.") {
                     self.network_apply(super::network::NetworkAction::Answer(a), &mut fx);
                 } else if a.purpose().starts_with("settings.") {
@@ -867,6 +984,9 @@ impl Controller for AppController {
         }
         self.session_events.extend(events);
         self.network_tick(&mut fx);
+        if let Some(b) = &mut self.browser {
+            fx.extend(b.tick());
+        }
         if self.dirty_since.is_some_and(|t| t.elapsed() >= AUTOSAVE_AFTER) {
             self.flush(&mut fx);
         }
@@ -1003,7 +1123,6 @@ mod tests {
 
     #[test]
     fn a_light_runs_the_command_it_stands_for() {
-        use super::super::commands::ShellCommand;
         use super::super::session::LightTarget;
         let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
         let root = TempRoot::new("lights");
@@ -1019,7 +1138,11 @@ mod tests {
         let cd_light = id_of(LightTarget::CdRom { key: 4 });
         assert_eq!(app.light_command(&disk_light).as_deref(), Some("browse:1"));
         assert_eq!(app.light_command(&cd_light).as_deref(), Some("disc.insert:4"));
-        assert_eq!(app.command(&disk_light).shell, Some(ShellCommand::BrowseDisk(1)));
+        // The disk opens in the browser (the image is a blank file: no label).
+        assert!(app.command(&disk_light).shell.is_none());
+        assert!(app.browser().is_some());
+        app.apply(AppAction::CloseBrowser);
+        assert!(app.browser().is_none());
         // A CD-ROM light asks for a disc.
         let fx = app.command(&cd_light).effects;
         assert!(fx.iter().any(|e| matches!(e, Effect::PickFile(_))), "{fx:?}");

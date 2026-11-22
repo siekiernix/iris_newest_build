@@ -106,6 +106,107 @@ pub struct Editor {
     pub read_only: bool,
 }
 
+/// Widget ids of the browser window. Every shell names its controls with
+/// these and maps them back with [`action_for`].
+pub mod ids {
+    pub const WINDOW: &str = "browser.window";
+    pub const TABLE: &str = "browser.table";
+    pub const UP: &str = "browser.up";
+    pub const REFRESH: &str = "browser.refresh";
+    pub const IMPORT: &str = "browser.import-files";
+    pub const IMPORT_FOLDER: &str = "browser.import-folder-button";
+    pub const EXPORT: &str = "browser.export-button";
+    pub const EXPORT_TAR: &str = "browser.export-tar-button";
+    pub const EXPORT_TGZ: &str = "browser.export-tgz-button";
+    pub const NEW_FOLDER: &str = "browser.new-folder-button";
+    pub const RENAME: &str = "browser.rename-button";
+    pub const PERMISSIONS: &str = "browser.permissions";
+    pub const OWNER: &str = "browser.owner";
+    pub const MOVE: &str = "browser.move";
+    pub const DELETE: &str = "browser.delete-button";
+    pub const EDIT: &str = "browser.edit";
+    pub const CHECK: &str = "browser.check";
+    pub const EDIT_ANYWAY: &str = "browser.edit-anyway-button";
+    pub const CANCEL: &str = "browser.cancel";
+    pub const UNPACK: &str = "browser.unpack";
+    pub const EDITOR_SAVE: &str = "browser.editor-save";
+    pub const EDITOR_CLOSE: &str = "browser.editor-close";
+    pub const EDITOR_TEXT: &str = "browser.editor-text";
+    /// Followed by the partition's position in [`super::DiskBrowserController::partitions`].
+    pub const PART: &str = "browser.part:";
+    /// Followed by the depth in the path bar.
+    pub const PATH: &str = "browser.path:";
+}
+
+/// A button of the browser's toolbar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tool {
+    pub id: &'static str,
+    pub label: String,
+    pub icon: Icon,
+    pub action: BrowserAction,
+}
+
+/// The browser's toolbar, in order; `None` is a gap between groups.
+pub fn tools() -> Vec<Option<Tool>> {
+    let t = |id, label: String, icon, action| Some(Tool { id, label, icon, action });
+    vec![
+        t(ids::UP, t!("browser-tb-up"), Icon::Up, BrowserAction::Up),
+        t(ids::REFRESH, t!("browser-tb-refresh"), Icon::Refresh, BrowserAction::Refresh),
+        None,
+        t(ids::IMPORT, t!("browser-tb-import"), Icon::Import, BrowserAction::Import),
+        t(ids::IMPORT_FOLDER, t!("browser-tb-import-folder"), Icon::Import, BrowserAction::ImportFolder),
+        t(ids::EXPORT, t!("browser-tb-export"), Icon::Export, BrowserAction::Export),
+        t(ids::EXPORT_TGZ, t!("browser-tb-export-tgz"), Icon::Export, BrowserAction::ExportArchive { gzip: true }),
+        t(ids::EXPORT_TAR, t!("browser-tb-export-tar"), Icon::Export, BrowserAction::ExportArchive { gzip: false }),
+        None,
+        t(ids::NEW_FOLDER, t!("browser-tb-new-folder"), Icon::NewFolder, BrowserAction::NewFolder),
+        t(ids::EDIT, t!("browser-tb-edit"), Icon::Edit, BrowserAction::EditText),
+        t(ids::RENAME, t!("browser-tb-rename"), Icon::Rename, BrowserAction::Rename),
+        t(ids::MOVE, t!("browser-tb-move"), Icon::Folder, BrowserAction::Move),
+        t(ids::PERMISSIONS, t!("browser-tb-permissions"), Icon::Permissions, BrowserAction::Permissions),
+        t(ids::OWNER, t!("browser-tb-owner"), Icon::Permissions, BrowserAction::Owner),
+        t(ids::DELETE, t!("browser-tb-delete"), Icon::Delete, BrowserAction::Delete),
+        None,
+        t(ids::CHECK, t!("browser-tb-check"), Icon::Check, BrowserAction::Check),
+    ]
+}
+
+/// The file table's columns after the icon: their ids (the [`Row`] field
+/// each shows) and titles.
+pub fn columns() -> Vec<(&'static str, String)> {
+    vec![
+        ("name", t!("browser-col-name")),
+        ("size", t!("browser-col-size")),
+        ("mode", t!("browser-col-mode")),
+        ("owner", t!("browser-col-owner")),
+        ("group", t!("browser-col-group")),
+        ("date", t!("browser-col-date")),
+    ]
+}
+
+/// The action a browser control with `id` means. `value` is a toggle's state
+/// (the unpack checkbox); other controls ignore it.
+pub fn action_for(id: &str, value: bool) -> Option<BrowserAction> {
+    if let Some(i) = id.strip_prefix(ids::PART).and_then(|i| i.parse().ok()) {
+        return Some(BrowserAction::SelectPartition(i));
+    }
+    if let Some(d) = id.strip_prefix(ids::PATH).and_then(|d| d.parse().ok()) {
+        return Some(BrowserAction::GoTo(d));
+    }
+    if let Some(t) = tools().into_iter().flatten().find(|t| t.id == id) {
+        return Some(t.action);
+    }
+    Some(match id {
+        ids::EDIT_ANYWAY => BrowserAction::EditAnyway,
+        ids::CANCEL => BrowserAction::Cancel,
+        ids::UNPACK => BrowserAction::SetUnpackArchives(value),
+        ids::EDITOR_SAVE => BrowserAction::EditorSave,
+        ids::EDITOR_CLOSE => BrowserAction::EditorClose,
+        _ => return None,
+    })
+}
+
 const P_EXPORT: &str = "browser.export";
 const P_EXPORT_TAR: &str = "browser.export-tar";
 const P_IMPORT: &str = "browser.import";
@@ -1155,6 +1256,18 @@ fn host_mode(p: &Path) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_tool_id_maps_back_to_its_action() {
+        for t in super::tools().into_iter().flatten() {
+            assert_eq!(super::action_for(t.id, false), Some(t.action), "{}", t.id);
+            assert!(!t.label.is_empty());
+        }
+        assert_eq!(super::action_for("browser.part:2", false), Some(super::BrowserAction::SelectPartition(2)));
+        assert_eq!(super::action_for("browser.path:1", false), Some(super::BrowserAction::GoTo(1)));
+        assert_eq!(super::action_for(super::ids::UNPACK, true), Some(super::BrowserAction::SetUnpackArchives(true)));
+        assert_eq!(super::action_for("browser.nonsense", false), None);
+    }
+
     use super::*;
     use crate::model::job::NoWake;
     use std::time::{Duration, Instant};

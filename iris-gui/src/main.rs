@@ -1364,7 +1364,12 @@ impl App {
                     };
                     let mut text = format!("\u{2022}{tag}");
                     if let Some(b) = &light.badge { text.push_str(&format!(" {b}")); }
-                    let clickable = self.app.light_command(&light.id).is_some();
+                    // egui has no disk browser window yet: a disk light's
+                    // browse would open the image with nothing on screen.
+                    let clickable = self
+                        .app
+                        .light_command(&light.id)
+                        .is_some_and(|c| !c.starts_with(iris_gui_core::controller::ids::item::BROWSE_DISK));
                     let label = egui::Label::new(RichText::new(text).small().color(color));
                     let r = ui.add(if clickable { label.sense(egui::Sense::click()) } else { label }).tip(light.tooltip.clone());
                     if clickable && r.clicked() {
@@ -1373,8 +1378,6 @@ impl App {
                 }
             });
             if let Some(id) = clicked {
-                // Only the effects: egui has no disk browser window yet, so a
-                // disk light's BrowseDisk is left for the AppKit shell.
                 let routed = self.app.command(&id);
                 self.run_effects(routed.effects);
             }

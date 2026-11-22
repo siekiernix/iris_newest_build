@@ -13,6 +13,8 @@ extern crate iris_gui_core;
 #[cfg(target_os = "macos")]
 mod app;
 #[cfg(target_os = "macos")]
+mod browser;
+#[cfg(target_os = "macos")]
 mod display;
 #[cfg(target_os = "macos")]
 mod effects;
