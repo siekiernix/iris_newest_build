@@ -17,7 +17,7 @@ CONTRIBUTING section before writing a controller.
 |---|---|
 | Branch `core-activity-counters` | Merged into `main` as PR techomancer/iris#797 (2026-11-22). |
 | Branch `iris-newgui` | Rebased onto `main` after #797 merged (2026-11-22). Local only, never pushed. Holds this plan and the GUI work. |
-| GUI code | Phase 2 under way: App, Session, Display and Settings (schema) slices done (library, folders, duplicate, quit guard; power on/off with the preflights as controller questions, saved states, discs, copy-on-write, NVRAM reset, status-bar lights from the core counters; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
+| GUI code | Phase 2 under way: App, Session, Display, Settings (schema), Network, Serial, Bench, Camera, Debug, new-machine and disk-browser controller slices done (library, folders, duplicate, quit guard; power on/off with the preflights as controller questions, saved states, discs, copy-on-write, NVRAM reset, status-bar lights from the core counters; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
 | Mock-ups | **Not in the repository, by the user's decision; do not commit mock-ups or screenshots.** Seven boards (stopped, running and settings in light and dark, and the macOS menu bar) are in the git-ignored `ignore/mockups/` on the user's machine, with their sources in `src/` (`node expand.js <in> <out.html> [light|dark]` makes plain HTML) and the annotated feedback screenshot; ask the user if the folder is absent. They predate the feedback in [Design changes from feedback](#design-changes-from-feedback-2026-11-21), so [The window](#the-window) is the specification. |
 | Unrelated finding | `kona-tile-handoff-race.md`: a real hang in the KONA tile scheduler, test ignored, not fixed. Not part of this work. |
 
@@ -389,10 +389,24 @@ with `fs_unix::ext::ExtFilesystem::open(reader, offset)`, which is both
   the job and calls `sync_metadata`; power-on is refused while a write job
   runs.
 
+### Verified (2026-11-22)
+
+- Every action (open, list, owner names from `/etc/passwd`, edit text and
+  save, new folder, rename, chmod, chown, import a folder and a file, export
+  to a folder and to `.tgz`, delete, check) ran on copies of two real
+  installs from the NAS: `Indy-IRIX53_dev.chd` (IRIX 5.3, EFS root) and
+  `irix65_Indy.chd` (IRIX 6.5, XFS root, which the crate opened for editing).
+  The crates' check found nothing new afterwards; both disks already had
+  orphan inodes (and the 6.5 disk 24 leaked blocks) before any edit, so the
+  open-time check makes them read-only until Edit Anyway. Writes went to the
+  CHD's `.diff.chd`, as the guest's would. The test is
+  `controller::disk_browser::tests::real_irix_disk` (ignored; needs
+  `IRIS_BROWSER_TEST_IMAGE`). Found and fixed: new inodes need the file-type
+  bits (`clanker/gui/disk-core-create-modes-carry-the-file-type.md`).
+
 ### Not verified
 
-- None of these crates has been run from iris, and no disk they edited has
-  been mounted by IRIX. Try every write action on a copy of a real IRIX disk,
+- No disk the crates edited has been mounted by IRIX yet. Try every write action on a copy of a real IRIX disk,
   boot it, and run `fsck` / `xfs_check` in the guest before trusting it.
 - `fs-xfs`'s rewritten directory hash was checked against Linux-made
   volumes, not an IRIX-made one.
@@ -536,9 +550,9 @@ For the user:
 For the implementer:
 
 - The read hook's exact shape, and a text-editor size limit.
-- Not verified here: none of the crates has been run from iris against an
-  IRIX-made image, and XFS write support has not been tried on an IRIX disk.
-  Test on a copy before trusting copy-in.
+- *Decided:* the read hook waits on its own branch; the text editor's limit
+  is 1 MB (plan default). A partition that will not open is marked with the
+  reason and the browser moves to the next.
 
 - Where a machine's saved states are listed from: a scan of the machine
   folder, or an index the controller keeps.

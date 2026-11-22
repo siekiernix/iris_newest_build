@@ -8,6 +8,7 @@ pub mod i18n;
 
 pub mod camera_test;
 pub mod capture_access;
+pub mod disk_browser;
 pub mod framebuffer;
 pub mod handle;
 pub mod hardware;

@@ -23,6 +23,7 @@ pub mod app;
 pub mod bench;
 pub mod camera;
 pub mod debug;
+pub mod disk_browser;
 pub mod display;
 pub mod icons;
 pub mod ids;
