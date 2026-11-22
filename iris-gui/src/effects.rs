@@ -26,6 +26,8 @@ pub struct Outcome {
     pub quit: bool,
     /// Text to put on the clipboard (egui does that through its context).
     pub clipboard: Option<String>,
+    /// A settings page to show (`ids::settings`).
+    pub open_settings: Option<&'static str>,
 }
 
 #[derive(Default)]
@@ -55,6 +57,7 @@ impl EffectHost {
                 Effect::OpenPath(path) => crate::host::open_path(&path),
                 Effect::RevealPath(path) => crate::config_ui::reveal_in_file_manager(&path.to_string_lossy()),
                 Effect::CopyToClipboard(text) => out.clipboard = Some(text),
+                Effect::OpenSettings(page) => out.open_settings = Some(page),
                 Effect::Quit => out.quit = true,
             }
         }

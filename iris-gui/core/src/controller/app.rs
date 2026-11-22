@@ -13,6 +13,7 @@ use iris::config::MachineConfig;
 
 use super::profile::{traits, Family, MachineIcon};
 use super::session::SessionController;
+
 use super::{Answer, ConfirmSpec, Controller, Effect, Enabled, TextSpec};
 use crate::model::job::Notify;
 use crate::model::machines;
@@ -63,6 +64,8 @@ pub enum AppAction {
     Flush,
     /// The user asked to quit (window close, menu, Cmd+Q).
     RequestQuit,
+    /// A session action: power, saved states, discs, disks.
+    Session(super::session::SessionAction),
     Answer(Answer),
 }
 
@@ -116,6 +119,8 @@ pub struct AppController {
     quit_after_sync: bool,
     /// Effects produced while constructing, handed out by the first tick.
     startup: Vec<Effect>,
+    /// Session events for the shell (display, serial console) since it last asked.
+    session_events: Vec<super::session::SessionEvent>,
 }
 
 impl AppController {
@@ -150,13 +155,14 @@ impl AppController {
             prefs,
             cfg,
             dirty_since: None,
-            session: SessionController::spawn(),
+            session: SessionController::spawn(notify.clone()),
             notify,
             problems: Default::default(),
             pending_machine: None,
             pending_folder: None,
             quit_after_sync: false,
             startup,
+            session_events: Vec::new(),
         };
         app.check_library();
         app
@@ -725,13 +731,23 @@ impl Controller for AppController {
                 }
             }
             AppAction::RequestQuit => self.request_quit(&mut fx),
-            AppAction::Answer(a) => self.answer(a, &mut fx),
+            AppAction::Session(a) => self.session_apply(a, &mut fx),
+            AppAction::Answer(a) => {
+                if a.purpose().starts_with("session.") {
+                    self.session_apply(super::session::SessionAction::Answer(a), &mut fx);
+                } else {
+                    self.answer(a, &mut fx);
+                }
+            }
         }
         fx
     }
 
     fn tick(&mut self) -> Vec<Effect> {
         let mut fx = std::mem::take(&mut self.startup);
+        self.session.drain(&mut fx);
+        let events = self.route_session_events(&mut fx);
+        self.session_events.extend(events);
         if self.dirty_since.is_some_and(|t| t.elapsed() >= AUTOSAVE_AFTER) {
             self.flush(&mut fx);
         }
@@ -740,6 +756,22 @@ impl Controller for AppController {
 }
 
 impl AppController {
+    /// Session events (started, stopped, halted, powered off, sync done) since
+    /// the last call, for the parts of the shell that react to them.
+    pub fn take_session_events(&mut self) -> Vec<super::session::SessionEvent> {
+        std::mem::take(&mut self.session_events)
+    }
+
+    pub(crate) fn apply_config_edited(&mut self) -> Vec<Effect> {
+        self.mark_dirty()
+    }
+
+    pub(crate) fn apply_flush(&mut self) -> Vec<Effect> {
+        let mut fx = Vec::new();
+        self.flush(&mut fx);
+        fx
+    }
+
     /// The time until the autosave is due, so a shell that sleeps between
     /// wakes can schedule one.
     pub fn autosave_due_in(&self) -> Option<Duration> {
@@ -857,6 +889,46 @@ mod tests {
         let mut app = app_in(&root, &["alpha"]);
         let fx = app.apply(AppAction::RequestQuit);
         assert_eq!(fx.last(), Some(&Effect::Quit));
+        app.shutdown();
+    }
+
+    /// Power a disk-less Indy on through the session, see it run, and power
+    /// it off: at the PROM with no disks the stop needs no question.
+    #[test]
+    fn power_on_and_off_through_the_session() {
+        let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("IRIS_NO_EXIT_ON_POWEROFF", "1");
+        let root = TempRoot::new("power");
+        let mut prefs = GuiSettings::load_in(root.0.clone(), &root.0);
+        let mut cfg = MachineConfig::default();
+        cfg.banks = iris::config::banks_from4([8, 8, 0, 0]);
+        cfg.scsi.clear();
+        cfg.headless = true;
+        cfg.monitor_port = Some(0);
+        cfg.serial_port_a = Some(0);
+        cfg.serial_port_b = Some(0);
+        prefs.save_machine("indy", &mut cfg).unwrap();
+        prefs.active_machine = Some("indy".into());
+        prefs.save().unwrap();
+        let mut app = AppController::new(GuiSettings::load_in(root.0.clone(), &root.0), Arc::new(NoWake));
+        let wait = |app: &mut AppController, what: &str, done: &dyn Fn(&AppController) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !done(app) && Instant::now() < deadline {
+                app.tick();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(done(app), "{what}");
+        };
+        let fx = app.apply(AppAction::Session(super::super::session::SessionAction::PowerOn));
+        assert!(fx.iter().all(|e| matches!(e, Effect::Toast(_))), "{fx:?}");
+        wait(&mut app, "started", &|a| a.session().is_running());
+        assert!(app.take_session_events().contains(&super::super::session::SessionEvent::Started));
+        assert!(std::path::Path::new("nvram.bin").exists(), "the NVRAM was seeded");
+        let bar = app.status_bar();
+        assert_eq!(bar.executor, super::super::session::SessionController::executor());
+        let fx = app.apply(AppAction::Session(super::super::session::SessionAction::PowerOff));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Choose(_))), "no disks, no question: {fx:?}");
+        wait(&mut app, "stopped", &|a| !a.session().is_running() && a.session().is_idle());
         app.shutdown();
     }
 

@@ -19,7 +19,7 @@ mod serial_console;
 // The toolkit-free model, shared with the native shells. Bound at the crate
 // root so `crate::handle::Cmd` and friends keep their paths.
 use iris_gui_core::model::{
-    capture_access, framebuffer, handle, machines, macos_sandbox, netfix, netplan, ram, safe_stop,
+    capture_access, framebuffer, handle, machines, netfix, netplan, ram,
     settings, single_instance, summary,
 };
 
@@ -29,12 +29,10 @@ use dialogs::new_machine::{distribute_ram, NewMachineDialog};
 use ram::{ram_summary, ram_presets};
 use eframe::egui;
 use egui::{Color32, RichText, ViewportCommand};
-use handle::{Cmd, Evt, NetState};
+use handle::{Cmd, NetState};
 use iris_gui_core::controller::app::{AppAction, AppController};
-use iris_gui_core::controller::session::SyncProgress;
+use iris_gui_core::controller::session::{SessionAction, SessionEvent};
 use iris_gui_core::controller::{Controller, Enabled};
-use iris::config::MachineConfig;
-use safe_stop::{evaluate, reason_lines};
 use settings::{GuiSettings, UI_SCALE_MAX, UI_SCALE_MIN, WINDOW_DEFAULT_SIZE};
 use std::path::PathBuf;
 use i18n::{subtitle, ResponseExt};
@@ -274,14 +272,6 @@ struct App {
     /// rfd's reasons, when a Browse button found no file dialog to open.
     picker_unavailable: Option<Vec<String>>,
     fullscreen: bool,
-    stop_modal: Option<StopModal>,
-    missing_modal: Option<MissingDiskModal>,
-    /// Set on Start when attached CHDs sit in folders we can't write (App Store
-    /// sandbox) — prompts the user to grant the folder so on-exit fold can work.
-    chd_grant_modal: Option<ChdGrantModal>,
-    /// One-shot: the user chose "Start without compacting", so the next
-    /// `start_emulator` skips the CHD folder-grant preflight. Consumed on read.
-    skip_chd_grant_check: bool,
     /// Set when the user clicks "Use embedded PROM"; drives a confirmation modal.
     confirm_embedded_prom: bool,
     /// Host interface networks (from `if-addrs`), used by the Networking tab for
@@ -359,9 +349,6 @@ struct App {
     /// exactly once on that transition. Reset to true on Start so the initial
     /// idle-at-PROM state doesn't count as a halt.
     prev_cpu_halted: bool,
-    /// Previous frame's `cpu_stopped`, to edge-trigger the auto-consolidation
-    /// when the guest powers itself off (a clean IRIX shutdown).
-    prev_cpu_stopped: bool,
     /// Active "Test Camera" preview (None when the window is closed). Opening it
     /// starts host-camera capture; dropping it releases the device.
     camera_test: Option<camera_test::CameraTest>,
@@ -382,9 +369,6 @@ struct App {
     /// Whether the License / Privacy Help windows are open.
     show_license: bool,
     show_privacy: bool,
-    /// Pending "Discard changes (roll back)" awaiting confirmation; `Some` shows
-    /// the are-you-sure modal.
-    cow_discard_confirm: Option<CowDiscard>,
     /// Cached host network-interface list for the PCAP backend selector on the
     /// Network tab. `None` until first enumerated (lazily on tab open / refresh)
     /// so we don't call libpcap every frame. `Some(Ok(..))` holds the candidate
@@ -396,16 +380,7 @@ struct App {
     launched_net: Option<(iris::config::NetMode, Option<String>)>,
 }
 
-/// A COW overlay the user has asked to discard, awaiting confirmation.
-struct CowDiscard {
-    id: u8,
-    base: String,
-    chd: bool,
-}
 
-struct StopModal {
-    lines: Vec<String>,
-}
 
 /// Confirmation when the Networking tab commits a sanity-failing subnet. Cancel
 /// restores `revert_to`; Override keeps the value as typed.
@@ -415,56 +390,11 @@ struct NetSanityModal {
     revert_to: Option<String>,
 }
 
-/// True if `path` can actually be *read*. The Start preflight uses this instead
-/// of `Path::exists()` because under the macOS App Sandbox a user-selected file
-/// we hold no current grant for (e.g. a disk image picked in a previous session,
-/// before a security-scoped bookmark was minted — see [`macos_sandbox`]) still
-/// `stat()`s as present, so `exists()` would wave it through to `Machine::new`,
-/// which then fails to attach the disk. We probe an actual read (not just an
-/// `open`) because the sandbox can permit `open()` yet deny `read()` once a
-/// grant has lapsed — so opening alone would still slip past the check and only
-/// fail deep in the CHD/image loader. Catching it here routes the disk to the
-/// missing-disk modal, where the user can re-select or detach it.
-pub(crate) fn disk_readable(path: &str) -> bool {
-    use std::io::Read;
-    if iris::http_disk::is_url(path) {
-        return true; // read over the network, not through the sandbox
-    }
-    if path.is_empty() {
-        return false;
-    }
-    let Ok(mut f) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut probe = [0u8; 1];
-    matches!(f.read(&mut probe), Ok(n) if n >= 1)
-}
 
-/// True if we can create (and remove) a file *in* `dir` — i.e. we hold write
-/// access to the directory itself, not merely to the files already inside it.
-///
-/// This matters for the exit-time CHD fold ("Synchronizing disks…"): it writes
-/// a `.synctmp.chd` beside the base and atomically renames it over the base,
-/// both of which need directory write access. Under the macOS App Sandbox a
-/// *file*-scoped grant (the user picking a disk image) does NOT convey that —
-/// only a folder grant (a directory security-scoped bookmark) does. We probe a
-/// real create because, as with [`disk_readable`], the sandbox can let a path
-/// `stat()` yet deny the write. The probe file is uniquely named and removed
-/// immediately.
-fn dir_writable(dir: &std::path::Path) -> bool {
-    let probe = dir.join(format!(".iris-write-probe-{}", std::process::id()));
-    match std::fs::File::create(&probe) {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
-            true
-        }
-        Err(_) => false,
-    }
-}
 
 /// True if a granted folder is currently *reachable* — we can list it. Under the
 /// sandbox this is gated by an active security-scoped grant, so it's a cheap,
-/// non-writing liveness check (unlike [`dir_writable`], safe to call every frame
+/// non-writing liveness check (unlike `machines::dir_writable`, safe to call every frame
 /// while a menu is open). Since we only ever mint recursive read-write directory
 /// grants, "reachable" implies "writable", so this tells the user whether a
 /// recorded folder grant is actually in effect right now.
@@ -472,30 +402,8 @@ fn folder_accessible(path: &str) -> bool {
     std::fs::read_dir(path).is_ok()
 }
 
-/// Modal shown when one or more SCSI image files are missing on Start.
-/// `Machine::new` would otherwise call `std::process::exit(1)` and take
-/// the whole GUI down with it.
-struct MissingDiskModal {
-    missing: Vec<summary::MissingDisk>,
-}
 
-/// One attached CHD whose containing folder the app can't write to, so its
-/// exit-time fold would be denied (see [`dir_writable`]).
-struct ChdNeedsGrant {
-    id: u8,
-    path: String,
-    /// Absolute parent directory that needs a folder grant.
-    dir: String,
-}
 
-/// Modal shown on Start (App Store build) when attached CHD disks live in
-/// folders the sandbox hasn't granted directory write access to. Without that
-/// grant the copy-on-write `.diff.chd` can never be folded back into the base on
-/// exit, so the disk's footprint only ever grows. Lets the user grant the
-/// folder(s) up front, or start anyway and forgo on-exit compaction.
-struct ChdGrantModal {
-    disks: Vec<ChdNeedsGrant>,
-}
 
 impl App {
     fn new(prefs: GuiSettings, notify: std::sync::Arc<dyn iris_gui_core::model::job::Notify>) -> Self {
@@ -520,10 +428,6 @@ impl App {
             quit_now: false,
             pending_clipboard: None,
             picker_unavailable: None,
-            stop_modal: None,
-            missing_modal: None,
-            chd_grant_modal: None,
-            skip_chd_grant_check: false,
             confirm_embedded_prom: false,
             net_ifaces: netplan::gather_host_ifaces(),
             net_sanity_modal: None,
@@ -545,7 +449,6 @@ impl App {
             pending_fb_snap: false,
             input_state: input::InputState::default(),
             prev_cpu_halted: true,
-            prev_cpu_stopped: false,
             camera_test: None,
             camera_test_tex: None,
             camera_test_seq: 0,
@@ -556,7 +459,6 @@ impl App {
             show_ultra64_help: false,
             show_license: false,
             show_privacy: false,
-            cow_discard_confirm: None,
             pcap_ifaces: None,
             launched_net: None,
         }
@@ -621,13 +523,18 @@ impl App {
         for t in out.toasts { self.toast(t); }
         if let Some(text) = out.clipboard { self.pending_clipboard = Some(text); }
         if out.quit { self.allow_close = true; self.quit_now = true; }
+        if let Some(page) = out.open_settings {
+            use iris_gui_core::controller::ids::settings as page_ids;
+            self.tab = match page {
+                page_ids::DISKS => config_ui::Tab::Disks,
+                page_ids::NETWORK => config_ui::Tab::Network,
+                _ => config_ui::Tab::General,
+            };
+            self.show_config_editor = true;
+        }
         for a in out.answers { self.run_app(AppAction::Answer(a)); }
     }
 
-    fn maybe_autosave(&mut self) {
-        let fx = self.app.tick();
-        self.run_effects(fx);
-    }
 
     /// Reload from TOML when selecting a machine, including external edits.
     fn switch_to(&mut self, name: &str) {
@@ -697,327 +604,52 @@ impl App {
     }
 
     fn start_emulator(&mut self) {
-        // Flush any pending edits before the machine starts so the on-disk
-        // copy matches what we're about to boot. This also harvests a
-        // security-scoped bookmark for any newly user-selected file.
-        if !self.can_select_machine() { return; }
-        if self.app.is_dirty() && !self.flush_machine() { return; }
-        let Some(name) = self.app.prefs().active_machine.clone() else { return; };
-        let result = (|| -> Result<MachineConfig, String> {
-            let cfg = machines::read(&self.app.prefs().machine_path(&name)?)?;
-            machines::enter(&self.app.prefs().machine_dir(&name)?)?;
-            Ok(cfg)
-        })();
-        match result {
-            Ok(mut cfg) => {
-                // Files added by hand can contain absolute paths; normalize them
-                // before either the GUI or the emulator uses the saved config.
-                let before = crate::machines::to_toml(&cfg).unwrap_or_default();
-                let dir = self.app.prefs().machine_dir(&name).unwrap();
-                if let Err(e) = machines::make_relative(&mut cfg, &dir) { self.toast(e); return; }
-                if crate::machines::to_toml(&cfg).unwrap_or_default() != before {
-                    if let Err(e) = self.app.prefs_mut().save_machine(&name, &mut cfg) { self.toast(e); return; }
-                }
-                *self.app.config_mut() = cfg;
-            },
-            Err(e) => { self.toast(t!("toast-start-failed", error = e)); return; }
-        }
-        let snapshot = self.app.config().clone();
-        self.app.prefs_mut().machines.insert(name, snapshot);
-        // (Re)assert macOS sandbox access to every bookmarked file *before* the
-        // preflight opens them. The startup restore() ran before any bookmark
-        // for a freshly-picked file existed, and the file picker's grant does
-        // not survive a machine stop/restart — so without re-asserting here the
-        // second Start of a session can no longer read the disk image. No-op off
-        // the App Store build. See [`macos_sandbox`].
-        macos_sandbox::restore(&self.app.prefs().bookmarks);
-        if iris::build_features::LIGHTNING && self.app.config().gdb_port.is_some() {
-            // GDB stub is a no-op under lightning; silently drop the setting
-            // so we don't hand the executor a port it can't honour.
-            self.app.config_mut().gdb_port = None;
-        }
-        if let Err(e) = self.app.config().validate() {
-            self.toast(t!("toast-invalid-config", error = e.to_string()));
-            return;
-        }
-        // Preflight: Machine::new will call std::process::exit(1) on the
-        // first SCSI device whose backing file is missing — we'd lose the
-        // GUI process. Catch that case here and prompt the user instead.
-        if let Some(path) = summary::expansion_paths(&self.app.config()).into_iter().find(|p| !disk_readable(p)) {
-            self.toast(t!("extra-unreadable-disk", path = path));
-            return;
-        }
-        let missing = summary::missing_disks(&self.app.config(), disk_readable);
-        if !missing.is_empty() {
-            self.missing_modal = Some(MissingDiskModal { missing });
-            return;
-        }
-        // Preflight: under the App Sandbox, folding a compressed CHD's `.diff.chd`
-        // back into its base on exit needs write access to the disk's *folder*,
-        // which picking the disk file alone doesn't grant. If any attached CHD is
-        // in a folder we can't write, prompt the user to grant it now — otherwise
-        // the disk silently never shrinks. "Start without compacting" sets the
-        // one-shot bypass so the user can proceed regardless.
-        if !std::mem::take(&mut self.skip_chd_grant_check) {
-            let needs_grant = self.chd_dirs_needing_grant();
-            if !needs_grant.is_empty() {
-                self.chd_grant_modal = Some(ChdGrantModal { disks: needs_grant });
-                return;
-            }
-        }
-        // The core reads an empty `prom` as a file name and refuses it; an
-        // older GUI wrote it to mean the built-in PROM, which `(embedded)` names.
-        if self.app.config().prom.is_empty() {
-            self.app.config_mut().prom = "(embedded)".into();
-            self.mark_dirty();
-        }
-        // Say when the built-in PROM runs, so it's clear the start did happen
-        // (iris::dev::prom_image::resolve picks it).
-        if crate::extra_ui::builtin_prom(&self.app.config()) {
-            self.toast(t!("toast-prom-builtin"));
-        }
-        self.app.config().debug.apply_env();
-        self.app.config().jitv2.apply_env();
-        // An automatic `[jitv2] threads` follows the CPU count chosen since.
-        self.app.config_mut().settle_jitv2_threads();
-        // Latch the networking backend the machine is being started with, so the
-        // running status footer can report PCAP vs NAT (and which interface)
-        // independent of any later edits to the config editor. On a build without
-        // PCAP support the runtime forces NAT (even for an imported `mode =
-        // "pcap"`), so reflect that here and never surface PCAP. Off and
-        // stream stay what they are.
-        self.launched_net = Some(match self.app.config().network.mode {
-            iris::config::NetMode::Pcap if !iris::build_features::PCAP => (iris::config::NetMode::Nat, None),
-            mode => (mode, self.app.config().network.pcap_interface.clone()),
-        });
-        self.started_banks = Some(self.app.config().banks);
-        self.started_cpu = Some(self.app.config().cpu());
-        // Don't resize the window when the VM launches — its size is latched at
-        // app load (the saved window size, or the first-launch fit to vm_scale)
-        // and the guest display is letterboxed into it. Only the VM-scale slider
-        // and UI zoom re-snap the window after that.
-        // Drop the previous run's cached textures so we never flash their last
-        // frame before the new run renders (the shared FrameSinks are reset
-        // worker-side on Start; this clears the GUI's mirror of them).
-        self.fb_tex = None;
-        self.fb_tex_head1 = None;
-        self.last_fb_seq = 0;
-        self.last_fb_seq_head1 = 0;
-        self.fb_took_frame = false;
-        // Assume halted at boot (idle at the PROM) so the auto-release only
-        // fires on a later running→halted transition, not at startup.
-        self.prev_cpu_halted = true;
-        // Fresh run isn't powered off; a later running→stopped edge means the
-        // guest shut itself down (drives the auto-consolidation below).
-        self.prev_cpu_stopped = false;
-        // If the NVRAM has no Ethernet MAC, IRIX won't attach ec0 — networking,
-        // System Manager, and Disk Manager all fail. Offer to set one up, and
-        // hold the machine at the PROM by interrupting autoboot (see the Esc
-        // guard in `update`) so the user sets the MAC before IRIX boots — one
-        // boot instead of boot-then-reboot.
-        // Seed a default NVRAM if there's none yet (a fresh install / bundled
-        // app has nothing in the working dir to migrate), so the machine boots
-        // with proper PROM env instead of a blank one. `toast` holds one
-        // message, so every step below collects into `notes` and one final
-        // call reports them all, rather than each overwriting the last.
-        let mut notes = Vec::new();
-        // Seed only the Indy/Indigo2 battery files. Other platforms use their
-        // own NVRAM or flash layouts and a configured/generated Ethernet MAC.
-        if crate::extra_ui::mc_machine(self.app.config().machine.profile) {
-            if settings::ensure_nvram_seeded(&self.app.config().nvram) {
-                notes.push(t!("toast-nvram-seeded"));
-            }
-            // Networking needs an Ethernet MAC in NVRAM (6 raw bytes at a fixed
-            // offset). If there's none, write a generated one *now*, before boot —
-            // so IRIX attaches ec0 on the first boot, no PROM monitor / reboot.
-            //
-            // Indigo2/IP28 read `eaddr` from the NVRAM *EEPROM* instead
-            // (`nveeprom`, see `clanker/irix/networking.md`) — the DS1386 write
-            // above has no effect on those profiles' guest networking at all.
-            // Patch whichever chip(s) the config carries; harmless on a profile
-            // that doesn't use one (core's own `backdoor_set_mac_if_blank` simply
-            // never reads it then).
-            if !settings::nvram_has_mac(&self.app.config().nvram) {
-                let seed = self.app.prefs().active_machine.as_deref().unwrap_or("indy");
-                let mac = settings::generate_mac_bytes(seed);
-                notes.push(match settings::write_nvram_mac(&self.app.config().nvram, mac) {
-                    Ok(true)  => t!("toast-nvram-mac-written", mac = settings::mac_to_string(mac)),
-                    Ok(false) => t!("toast-nvram-mac-no-file"),
-                    Err(e)    => t!("toast-nvram-mac-failed", error = e.to_string()),
-                });
-            }
-            if !settings::nveeprom_has_mac(&self.app.config().nveeprom) {
-                settings::ensure_nveeprom_exists(&self.app.config().nveeprom);
-                let seed = self.app.prefs().active_machine.as_deref().unwrap_or("indy");
-                let mac = settings::generate_mac_bytes(seed);
-                if let Ok(true) = settings::write_nveeprom_mac(&self.app.config().nveeprom, mac) {
-                    notes.push(t!("toast-nveeprom-mac-written", mac = settings::mac_to_string(mac)));
-                }
-            }
-        }
-        self.app.session().handle().send(Cmd::Start(Box::new(self.app.config().clone())));
-        if !notes.is_empty() {
-            self.toast(notes.join("\n"));
-        }
+        self.run_app(AppAction::Session(SessionAction::PowerOn));
     }
 
 
-    /// Detach the given SCSI IDs from the live config and (optionally) try Start again.
-    fn detach_and_start(&mut self, ids: &[u8]) {
-        for id in ids { self.app.config_mut().scsi.remove(id); }
-        self.mark_dirty();
-        self.start_emulator();
-    }
 
-    /// App Store sandbox: let the user grant a folder (recursive read-write) so
-    /// disk images, the CHD diff / fold temp written beside a base, and an NFS
-    /// shared subfolder under it are all accessible from one grant. Persists a
-    /// directory security-scoped bookmark and asserts access immediately.
     fn grant_disk_folder(&mut self) {
-        self.grant_disk_folder_at(None);
+        self.run_app(AppAction::Session(SessionAction::GrantDiskFolder));
     }
 
-    /// As [`grant_disk_folder`](Self::grant_disk_folder), but opens the picker
-    /// already pointed at `start_dir` (e.g. the folder of a CHD that needs a
-    /// grant), so the user just confirms it.
-    fn grant_disk_folder_at(&mut self, start_dir: Option<&str>) {
-        // `start_dir` is itself the folder that needs granting, so open *at*
-        // it — the caller's whole point is that the user just confirms. With
-        // none, the managed disks folder beats wherever rfd last was.
-        let dialog = filedialog::dialog_at_dir(
-            &t!("main-grant-folder-title"),
-            start_dir.unwrap_or(""),
-            filedialog::Anchor::Disks,
-        );
-        if let Some(dir) = dialog.pick_folder() {
-            let path = dir.to_string_lossy().into_owned();
-            if !self.app.prefs().disk_folders.contains(&path) {
-                self.app.prefs_mut().disk_folders.push(path.clone());
-            }
-            let _ = self.app.prefs_mut().save(); // mints the directory bookmark
-            macos_sandbox::restore(&self.app.prefs().bookmarks); // start accessing now
-            self.toast(t!("toast-folder-granted", path = &path));
-        }
-    }
 
-    /// macOS preflight: attached CHD disks (non-scratch HDDs) whose folder we
-    /// can't write, so their on-exit `.diff.chd` fold would be denied. Runs on
-    /// ALL macOS builds: the sandbox (MAS) build needs an explicit directory
-    /// security-scoped grant, while the notarized build is subject to macOS TCC
-    /// (Documents/Desktop/Downloads/iCloud/external/network volumes are blocked
-    /// until the user consents). Either way we probe real writability and prompt
-    /// up front, so the fold doesn't silently fail at quit. Empty off macOS,
-    /// where there's no such gate and folders are writable directly.
-    fn chd_dirs_needing_grant(&self) -> Vec<ChdNeedsGrant> {
-        if !cfg!(target_os = "macos") {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
-        if self.app.config().machine.profile.is_ip35_bricks() { return out; }
-        for (&id, dev) in &self.app.config().scsi {
-            // CD-ROM CHDs are read-only (no diff); scratch disks live in the
-            // writable container. Only writable HDD CHDs ever get folded.
-            if dev.scratch || dev.is_cdrom() { continue; }
-            if !dev.path.ends_with(".chd") { continue; }
-            let absolute = abs_path(&dev.path);
-            let Some(parent) = std::path::Path::new(&absolute).parent() else { continue };
-            if !dir_writable(parent) {
-                out.push(ChdNeedsGrant {
-                    id,
-                    path: dev.path.clone(),
-                    dir: parent.to_string_lossy().into_owned(),
-                });
-            }
-        }
-        out.sort_by_key(|c| c.id);
-        out
-    }
 
-    /// Pop the folder-grant modal if any attached CHD is in a folder we can't
-    /// write. Called right after a disk is assigned (Browse pick), so the user
-    /// resolves permissions up front. No-op if already prompting or all good.
     fn check_chd_folder_grants(&mut self) {
-        if self.chd_grant_modal.is_some() { return; }
-        let needs = self.chd_dirs_needing_grant();
-        if !needs.is_empty() {
-            self.chd_grant_modal = Some(ChdGrantModal { disks: needs });
-        }
+        self.run_app(AppAction::Session(SessionAction::CheckFolderGrants));
     }
 
     /// SCSI-menu section: per-disk Commit / Discard for copy-on-write overlays.
     /// Only offered while the machine is stopped — the disk files are closed
     /// then, so applying or discarding can't corrupt a running guest.
     fn draw_cow_menu(&mut self, ui: &mut egui::Ui) {
-        // Snapshot disks that currently have an overlay on disk (cloned so we
-        // don't hold a `cfg` borrow while sending worker commands below).
-        let mut entries: Vec<(u8, String, bool)> = Vec::new(); // (id, base, is_chd)
-        for (&id, dev) in &self.app.config().scsi {
-            if dev.is_cdrom() || dev.scratch || dev.path.trim().is_empty() {
-                continue;
-            }
-            let is_chd = iris::chd_disk::is_chd(&dev.path);
-            let has_overlay = if is_chd {
-                iris::chd_disk::diff_path_for(std::path::Path::new(&dev.path)).exists()
-            } else if dev.overlay {
-                std::path::Path::new(&format!("{}.overlay", dev.path)).exists()
-            } else {
-                false
-            };
-            if has_overlay {
-                entries.push((id, dev.path.clone(), is_chd));
-            }
-        }
+        let entries = self.app.overlays();
         if entries.is_empty() {
             return;
         }
         ui.separator();
         ui.label(RichText::new(t!("menu-cow-heading")).strong());
-        if self.app.session().handle().is_running() {
+        if self.app.session().is_running() {
             ui.label(RichText::new(t!("menu-cow-stop-first")).weak());
             return;
         }
-        for (id, base, is_chd) in entries {
-            let name = std::path::Path::new(&base).file_name().and_then(|n| n.to_str()).unwrap_or(&base);
-            let label = crate::extra_ui::scsi_name(&self.app.config(), id);
-            ui.label(RichText::new(t!("menu-cow-disk", id = &label, name = name)).weak());
-            if ui.button(t!("menu-cow-commit"))
-                .tip(t!("menu-cow-commit-tip"))
-                .clicked()
-            {
-                if is_chd {
-                    // A CHD commit recompresses — show the progress modal.
-                    self.app.session_mut().set_syncing(Some(SyncProgress { disk: 0, total: 1, fraction: 0.0 }));
-                }
-                self.app.session().handle().send(Cmd::CowCommit { base: base.clone(), chd: is_chd });
+        for (key, base, _) in entries {
+            let name = std::path::Path::new(&base).file_name().and_then(|n| n.to_str()).unwrap_or(&base).to_string();
+            let label = crate::extra_ui::scsi_name(self.app.config(), key);
+            ui.label(RichText::new(t!("menu-cow-disk", id = &label, name = &name)).weak());
+            if ui.button(t!("menu-cow-commit")).tip(t!("menu-cow-commit-tip")).clicked() {
+                self.run_app(AppAction::Session(SessionAction::ApplyChanges { key }));
                 ui.close();
             }
-            if ui.button(t!("menu-cow-discard"))
-                .tip(t!("menu-cow-discard-tip"))
-                .clicked()
-            {
-                // Destructive — confirm before discarding.
-                self.cow_discard_confirm = Some(CowDiscard { id, base: base.clone(), chd: is_chd });
+            if ui.button(t!("menu-cow-discard")).tip(t!("menu-cow-discard-tip")).clicked() {
+                self.run_app(AppAction::Session(SessionAction::RollBack { key }));
                 ui.close();
             }
         }
     }
 
     fn request_stop(&mut self) {
-        let reasons = evaluate(&self.app.session().handle().status, &self.app.config());
-        if !reasons.is_empty() {
-            self.stop_modal = Some(StopModal { lines: reason_lines(&reasons) });
-            return;
-        }
-        // Safe to stop (guest quiesced). If a CHD has diff-borne changes, fold
-        // them back into the base now ("Synchronizing disks…") instead of leaving
-        // a sidecar — the worker stops the machine as part of the sync. This is a
-        // stop, not a quit, so `sync_then_close` stays false and the app stays open.
-        if self.app.session().handle().has_pending_chd_sync() {
-            self.app.session_mut().set_syncing(Some(SyncProgress { disk: 0, total: 0, fraction: 0.0 }));
-            self.app.session().handle().send(Cmd::SyncDisks);
-        } else {
-            self.app.session().handle().send(Cmd::Stop);
-        }
+        self.run_app(AppAction::Session(SessionAction::PowerOff));
     }
 
     /// Point the frame sinks at this context so the REX3 refresh thread wakes
@@ -1033,43 +665,37 @@ impl App {
     }
 
     fn handle_events(&mut self, ctx: &egui::Context) {
-        for evt in self.app.session_mut().handle_mut().drain_events() {
-            match evt {
-                Evt::Started   => {
+        // The app controller drains the worker: toasts, sync progress, the
+        // fold after a guest power-off, and the end of a quit.
+        let fx = self.app.tick();
+        self.run_effects(fx);
+        for event in self.app.take_session_events() {
+            match event {
+                SessionEvent::Started => {
                     // Fresh run: re-arm the one-shot PCAP permission prompt so a
                     // pcap-mode machine that can't open its capture re-prompts.
                     self.pcap_perm_prompted = false;
+                    let started = self.app.session().started_config().cloned();
+                    self.started_banks = started.as_ref().map(|c| c.banks);
+                    self.started_cpu = started.as_ref().map(|c| c.cpu());
+                    self.launched_net = started.as_ref().map(|c| match c.network.mode {
+                        iris::config::NetMode::Pcap if !iris::build_features::PCAP => (iris::config::NetMode::Nat, None),
+                        mode => (mode, c.network.pcap_interface.clone()),
+                    });
+                    // Drop the previous run's textures so its last frame never
+                    // flashes before the new run renders.
+                    self.fb_tex = None;
+                    self.fb_tex_head1 = None;
+                    self.last_fb_seq = 0;
+                    self.last_fb_seq_head1 = 0;
+                    self.fb_took_frame = false;
                     // Stop drops the machine and its serial listener; reconnect the
                     // in-app viewer so it attaches to the new VM, not a dead socket.
                     if self.serial_console.is_some() {
                         self.open_serial_console();
                     }
-                    self.toast(t!("toast-emulator-started"));
                 }
-                Evt::Stopped   => {
-                    self.toast(t!("toast-emulator-stopped"));
-                }
-                Evt::PowerOff  => self.toast(t!("toast-guest-powered-off")),
-                Evt::StateSaved(n)    => self.toast(t!("toast-state-saved", name = n)),
-                Evt::StateRestored(n) => self.toast(t!("toast-state-restored", name = n)),
-                Evt::Screenshot(p)    => self.toast(t!("toast-screenshot-saved", path = p.display())),
-                Evt::Error(e)         => self.toast(t!("toast-error", error = e)),
-                Evt::Status(_) => {}
-                Evt::SyncProgress { disk, total, fraction } => {
-                    self.app.session_mut().set_syncing(Some(SyncProgress { disk, total, fraction }));
-                }
-                Evt::CowDone { committed } => {
-                    self.toast(if committed { t!("toast-cow-committed") } else { t!("toast-cow-done") });
-                }
-                Evt::SyncDone(n) => {
-                    self.app.session_mut().set_syncing(None);
-                    if n > 0 { self.toast(t!("toast-disks-synced", count = n)); }
-                    // If the sync was a pre-quit step, the app controller
-                    // finishes quitting now. A Stop-triggered sync leaves the
-                    // app open with the machine stopped.
-                    let fx = self.app.sync_finished();
-                    self.run_effects(fx);
-                }
+                SessionEvent::Stopped | SessionEvent::Halted | SessionEvent::PoweredOff | SessionEvent::SyncDone => {}
             }
         }
         // Automatic PCAP elevation prompt: a pcap-mode machine that couldn't open
@@ -1189,6 +815,7 @@ impl App {
                         ui.close();
                     }
                     let folders = self.app.prefs().disk_folders.clone();
+                    let mut revoke: Option<String> = None;
                     if folders.is_empty() {
                         ui.label(RichText::new(t!("menu-file-no-folders")).weak().small());
                     }
@@ -1210,11 +837,12 @@ impl App {
                                 config_ui::reveal_in_file_manager(f);
                             }
                             if ui.small_button("\u{00D7}").tip(t!("menu-file-folder-revoke-tip")).clicked() {
-                                self.app.prefs_mut().disk_folders.retain(|x| x != f);
-                                self.app.prefs_mut().bookmarks.remove(f);
-                                let _ = self.app.prefs_mut().save();
+                                revoke = Some(f.clone());
                             }
                         });
+                    }
+                    if let Some(path) = revoke {
+                        self.run_app(AppAction::Session(SessionAction::RevokeDiskFolder(path)));
                     }
                 }
                 ui.separator();
@@ -1240,8 +868,7 @@ impl App {
                     ui.close();
                 }
                 if ui.add_enabled(running, egui::Button::new(t!("menu-machine-reset"))).clicked() {
-                    self.app.session().handle().send(Cmd::Stop);
-                    self.start_emulator();
+                    self.run_app(AppAction::Session(SessionAction::Restart));
                     ui.close();
                 }
                 if ui.add_enabled(!running && (crate::extra_ui::mc_machine(self.app.config().machine.profile) || self.app.config().machine.profile == iris::config::MachineProfile::OctaneIp30), egui::Button::new(t!("menu-machine-reset-nvram")))
@@ -1320,7 +947,7 @@ impl App {
                     ui.label(t!("menu-machine-save-state"));
                     ui.add(egui::TextEdit::singleline(&mut self.save_state_name).desired_width(120.0));
                     if ui.button(t!("common-save")).clicked() {
-                        self.app.session().handle().send(Cmd::SaveState(self.save_state_name.clone()));
+                        self.run_app(AppAction::Session(SessionAction::SaveState(self.save_state_name.clone())));
                         ui.close();
                     }
                 });
@@ -1328,15 +955,13 @@ impl App {
                     ui.label(t!("menu-machine-restore-state"));
                     ui.add(egui::TextEdit::singleline(&mut self.restore_state_name).desired_width(120.0));
                     if ui.button(t!("menu-machine-restore")).clicked() {
-                        self.app.session().handle().send(Cmd::RestoreState(self.restore_state_name.clone()));
+                        self.run_app(AppAction::Session(SessionAction::RestoreState(self.restore_state_name.clone())));
                         ui.close();
                     }
                 });
                 ui.separator();
                 if ui.button(t!("menu-machine-screenshot")).clicked() {
-                    if let Some(p) = native_save_dialog(&t!("menu-machine-screenshot-title"), &[("PNG", &["png"])]) {
-                        self.app.session().handle().send(Cmd::Screenshot(p));
-                    }
+                    self.run_app(AppAction::Session(SessionAction::Screenshot));
                     ui.close();
                 }
                 if ui.add_enabled(running, egui::Button::new(t!("menu-machine-serial-console")))
@@ -1423,8 +1048,8 @@ impl App {
                             self.mark_dirty();
                             self.toast(msg);
                         }
-                        if self.app.session().handle().is_running() {
-                            self.app.session().handle().send(Cmd::LoadDisc { id, path, remount: true });
+                        if self.app.session().is_running() {
+                            self.run_app(AppAction::Session(SessionAction::LoadDisc { key: id, path }));
                         } else {
                             self.toast(t!("toast-disc-saved"));
                         }
@@ -1437,8 +1062,8 @@ impl App {
                             self.mark_dirty();
                             self.toast(msg);
                         }
-                        if self.app.session().handle().is_running() {
-                            self.app.session().handle().send(Cmd::LoadDisc { id, path, remount: true });
+                        if self.app.session().is_running() {
+                            self.run_app(AppAction::Session(SessionAction::LoadDisc { key: id, path }));
                         }
                     }
                     scsi_menu::ScsiAction::Eject { id } => {
@@ -1449,13 +1074,13 @@ impl App {
                             self.mark_dirty();
                             self.toast(msg);
                         }
-                        if self.app.session().handle().is_running() {
-                            self.app.session().handle().send(Cmd::EjectCdrom { id });
+                        if self.app.session().is_running() {
+                            self.run_app(AppAction::Session(SessionAction::EjectDisc { key: id }));
                         }
                     }
                     scsi_menu::ScsiAction::RemountInIrix { id } => {
-                        if self.app.session().handle().is_running() {
-                            self.app.session().handle().send(Cmd::RemountCdrom { id });
+                        if self.app.session().is_running() {
+                            self.run_app(AppAction::Session(SessionAction::RemountDisc { key: id }));
                             self.toast(t!("toast-cdrom-remount-sent", id = id));
                         } else {
                             self.toast(t!("toast-cdrom-remount-not-running"));
@@ -1624,12 +1249,12 @@ impl App {
         if ui.add_enabled_ui(running, |ui| {
             ui.add_sized(egui::vec2(ui.available_width(), 0.0), egui::Button::new(t!("main-save-state"))).clicked()
         }).inner {
-            self.app.session().handle().send(Cmd::SaveState(self.save_state_name.clone()));
+            self.run_app(AppAction::Session(SessionAction::SaveState(self.save_state_name.clone())));
         }
         if ui.add_enabled_ui(running, |ui| {
             ui.add_sized(egui::vec2(ui.available_width(), 0.0), egui::Button::new(t!("main-restore-state"))).clicked()
         }).inner {
-            self.app.session().handle().send(Cmd::RestoreState(self.restore_state_name.clone()));
+            self.run_app(AppAction::Session(SessionAction::RestoreState(self.restore_state_name.clone())));
         }
     }
 
@@ -1895,6 +1520,30 @@ impl App {
         });
         if want_check {
             self.show_net_check = true;
+        }
+        // Disk, CD-ROM and audio activity lights from the session's status bar.
+        {
+            use iris_gui_core::controller::session::{LightState, LightTarget};
+            let bar = self.app.status_bar();
+            ui.horizontal(|ui| {
+                for light in bar.lights.iter().filter(|l| matches!(l.target, LightTarget::Disk { .. } | LightTarget::CdRom { .. } | LightTarget::Audio)) {
+                    let color = match light.state {
+                        LightState::Off => Color32::from_gray(0x60),
+                        LightState::Idle => Color32::from_gray(0x90),
+                        LightState::Reading | LightState::Active => Color32::from_rgb(0x35, 0xb8, 0x4a),
+                        LightState::Writing => Color32::from_rgb(0xe0, 0x9a, 0x2a),
+                        LightState::Fault => Color32::from_rgb(0xd9, 0x4a, 0x3d),
+                    };
+                    let tag = match light.target {
+                        LightTarget::CdRom { .. } => "CD",
+                        LightTarget::Audio => "AU",
+                        _ => "HD",
+                    };
+                    let mut text = format!("\u{2022}{tag}");
+                    if let Some(b) = &light.badge { text.push_str(&format!(" {b}")); }
+                    ui.label(RichText::new(text).small().color(color)).tip(light.tooltip.clone());
+                }
+            });
         }
         if running && self.fb_scale > 0.0 {
             // How magnified the emulated display currently is (1× = native).
@@ -2284,25 +1933,7 @@ impl App {
         }
         self.prev_cpu_halted = halted;
 
-        // Auto-consolidate on a clean guest power-off. A guest `poweroff` stops
-        // the CPU thread (`cpu_stopped`) while the GUI still considers the
-        // machine running — the worker isn't told, and only a user STOP sets
-        // `running=false`, so `running && cpu_stopped` uniquely identifies "the
-        // guest shut itself down". Fold any pending CHD overlay back into its
-        // base NOW so consolidation happens even when the user later quits via
-        // Cmd+Q (which bypasses the close-time fold — winit 0.29 doesn't hook
-        // applicationShouldTerminate). Edge-triggered → fires once per power-off.
-        // (`Evt::PowerOff` is never emitted — it awaits a core subscribe API — so
-        // we key off the status-derived `cpu_stopped`, same as the overlay.)
-        let stopped = self.app.session().handle().status.cpu_stopped;
-        if stopped && !self.prev_cpu_stopped && self.app.session().handle().is_running()
-            && self.app.session().handle().has_pending_chd_sync() && self.app.session().syncing().is_none()
-        {
-            self.toast(t!("toast-guest-off-syncing"));
-            self.app.session_mut().set_syncing(Some(SyncProgress { disk: 0, total: 0, fraction: 0.0 }));
-            self.app.session().handle().send(Cmd::SyncDisks);
-        }
-        self.prev_cpu_stopped = stopped;
+        // A guest power-off folds pending CHD diffs at once (SessionController::drain).
 
         // Pump egui input → PS/2 controller. Mouse/keyboard only reach the
         // guest while captured (click the framebuffer to capture, Ctrl+Alt+Esc
@@ -2383,8 +2014,9 @@ impl App {
             ConfigAction::RefreshPcapIfaces => self.refresh_pcap_ifaces(),
             ConfigAction::EnablePacketCapture => self.run_enable_packet_capture(),
             ConfigAction::LoadDisc { id, path, remount } => {
-                if self.app.session().handle().is_running() {
-                    self.app.session().handle().send(Cmd::LoadDisc { id, path: path.clone(), remount });
+                if self.app.session().is_running() {
+                    let _ = remount;
+                    self.run_app(AppAction::Session(SessionAction::LoadDisc { key: id, path: path.clone() }));
                     let filename = std::path::Path::new(&path)
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
@@ -2949,42 +2581,6 @@ impl App {
         ctx.request_repaint();
     }
 
-    /// Confirmation before discarding a COW overlay (it's destructive).
-    fn cow_discard_modal(&mut self, ctx: &egui::Context) {
-        let Some(job) = &self.cow_discard_confirm else { return };
-        let name = std::path::Path::new(&job.base).file_name().and_then(|n| n.to_str()).unwrap_or(&job.base).to_string();
-        let (id, base, chd) = (job.id, job.base.clone(), job.chd);
-        let label = crate::extra_ui::scsi_name(&self.app.config(), id);
-        let mut decision: Option<bool> = None; // Some(true) = discard, Some(false) = cancel
-        egui::Window::new(t!("modal-discard-title"))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.set_max_width(400.0);
-                ui.label(RichText::new(t!("modal-discard-body")).strong());
-                ui.add_space(4.0);
-                ui.label(RichText::new(t!("menu-cow-disk", id = &label, name = &name)).weak());
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button(t!("common-cancel")).clicked() {
-                        decision = Some(false);
-                    }
-                    if ui.add(crate::extra_ui::filled_button(RichText::new(t!("modal-discard-confirm")).color(Color32::WHITE), Color32::from_rgb(140, 40, 40))).clicked()
-                    {
-                        decision = Some(true);
-                    }
-                });
-            });
-        match decision {
-            Some(true) => {
-                self.app.session().handle().send(Cmd::CowReset { base, chd });
-                self.cow_discard_confirm = None;
-            }
-            Some(false) => self.cow_discard_confirm = None,
-            None => {}
-        }
-    }
 
     fn welcome_panel(&mut self, ui: &mut egui::Ui) {
         for error in &self.app.prefs().errors { ui.colored_label(Color32::from_rgb(230, 140, 70), error); }
@@ -3176,7 +2772,6 @@ impl eframe::App for App {
         let ctx = &ui.ctx().clone();
         self.install_frame_wake(ctx);
         self.handle_events(ctx);
-        self.maybe_autosave();
 
         // A clean exit (window close / File→Quit) asks the app controller,
         // which folds pending CHD diffs into their bases first ("Synchronizing
@@ -3224,7 +2819,8 @@ impl eframe::App for App {
                 if let Some((id, key)) = cdrom {
                     let cur = self.app.config().scsi.get(&key).map(|d| d.path.clone()).unwrap_or_default();
                     if let Some(path) = scsi_menu::pick_iso(&t!("main-load-disc-title"), &cur) {
-                        self.app.session().handle().send(Cmd::LoadDisc { id, path, remount: true });
+                        let _ = id;
+                        self.run_app(AppAction::Session(SessionAction::LoadDisc { key, path }));
                     }
                 } else {
                     self.toast(t!("toast-no-cdrom"));
@@ -3350,45 +2946,7 @@ impl eframe::App for App {
         self.sync_modal(ctx);
 
         // "Discard changes?" confirmation for a COW roll-back.
-        self.cow_discard_modal(ctx);
 
-        // Safe-stop confirmation modal.
-        let mut close_modal = false;
-        let mut do_force = false;
-        let mut do_halt  = false;
-        if let Some(modal) = &self.stop_modal {
-            egui::Window::new(t!("modal-stop-title"))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label(RichText::new(t!("modal-stop-body")).strong());
-                    for line in &modal.lines { ui.label(t!("modal-list-item", item = line)); }
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button(t!("common-cancel")).clicked() { close_modal = true; }
-                        if ui.button(t!("modal-stop-halt")).clicked() { do_halt = true; close_modal = true; }
-                        if ui.add(crate::extra_ui::filled_button(RichText::new(t!("modal-stop-force")).color(Color32::WHITE), Color32::from_rgb(140, 40, 40))).clicked()
-                        {
-                            do_force = true; close_modal = true;
-                        }
-                    });
-                });
-        }
-        if close_modal { self.stop_modal = None; }
-        if do_force { self.app.session().handle().send(Cmd::Stop); }
-        if do_halt  {
-            // Type "halt\n" at the IRIX serial console in-process (see
-            // EmulatorHandle / Machine::inject_serial_console). This used to
-            // open a loopback TCP client to 127.0.0.1:8881; doing it in-process
-            // means clean shutdown no longer depends on the serial server
-            // socket (which the macOS App Sandbox would otherwise gate behind
-            // the network.server entitlement). IRIX takes a few seconds to shut
-            // down cleanly; the user can hit Stop once the PROM "halted"
-            // message appears.
-            self.app.session().handle().send(Cmd::HaltIrix);
-            self.toast(t!("toast-halt-sent"));
-        }
 
         // A Browse button found no file dialog to open (Linux without a
         // desktop portal or zenity): say so instead of doing nothing.
@@ -3506,170 +3064,6 @@ impl eframe::App for App {
             if close { self.pcap_perm_modal = false; }
         }
 
-        // Missing-disk modal.
-        enum MissingChoice { None, Cancel, Detach, EditDisks }
-        let mut choice = MissingChoice::None;
-        if let Some(modal) = &self.missing_modal {
-            egui::Window::new(t!("modal-missing-title"))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label(RichText::new(t!("modal-missing-body")).strong());
-                    for m in &modal.missing {
-                        ui.label(if m.cdrom {
-                            t!("modal-missing-cdrom", id = &m.name, path = &m.path)
-                        } else {
-                            t!("modal-missing-disk", id = &m.name, path = &m.path)
-                        });
-                    }
-                    ui.add_space(8.0);
-                    if cfg!(feature = "appstore") {
-                        // Under the sandbox an existing file may be unreadable
-                        // because the app's access to it lapsed — re-selecting it
-                        // re-grants access and stores a bookmark for next launch.
-                        ui.label(RichText::new(t!("modal-missing-sandbox")).weak());
-                        ui.add_space(4.0);
-                    }
-                    subtitle(ui, t!("modal-missing-subtitle"));
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui.button(t!("common-cancel")).clicked() { choice = MissingChoice::Cancel; }
-                        if ui.button(t!("modal-missing-edit")).clicked() { choice = MissingChoice::EditDisks; }
-                        if ui.add(crate::extra_ui::filled_button(t!("modal-missing-detach"), Color32::from_rgb(60, 90, 140))).clicked()
-                        {
-                            choice = MissingChoice::Detach;
-                        }
-                    });
-                });
-        }
-        match choice {
-            MissingChoice::None => {}
-            MissingChoice::Cancel => { self.missing_modal = None; }
-            MissingChoice::EditDisks => {
-                // Switching the tab alone is invisible if the config editor
-                // side panel is collapsed (its default state) — open it too,
-                // or the button appears to do nothing.
-                self.tab = config_ui::Tab::Disks;
-                self.show_config_editor = true;
-                self.missing_modal = None;
-            }
-            MissingChoice::Detach => {
-                let ids: Vec<u8> = self.missing_modal.as_ref()
-                    .map(|m| m.missing.iter().map(|d| d.key).collect())
-                    .unwrap_or_default();
-                self.missing_modal = None;
-                self.detach_and_start(&ids);
-            }
-        }
-
-        // CHD folder-grant modal (App Store): attached CHDs sit in folders we
-        // can't write, so their on-exit fold would be denied. Offer to grant
-        // each folder, or start anyway and forgo compaction.
-        // `Grant` is built only in the sandbox branch, `OpenPrivacy`/`Recheck`
-        // only in the notarized branch — so one set is always cfg-dead.
-        #[allow(dead_code)]
-        enum ChdGrantChoice { None, Cancel, StartAnyway, Grant(String), OpenPrivacy, Recheck }
-        let mut chd_choice = ChdGrantChoice::None;
-        if let Some(modal) = &self.chd_grant_modal {
-            egui::Window::new(t!("modal-grant-title"))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label(RichText::new(t!("modal-grant-body")).strong());
-                    for d in &modal.disks {
-                        ui.label(t!("modal-grant-disk", id = d.id, path = &d.path));
-                    }
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(t!("modal-grant-why")).weak());
-                    ui.add_space(6.0);
-                    subtitle(ui, t!("modal-grant-subtitle"));
-                    ui.add_space(6.0);
-                    // Sandbox (MAS): a directory security-scoped grant via the
-                    // open panel conveys write access. One button per distinct
-                    // folder — a recursive grant covers every disk under it.
-                    #[cfg(feature = "appstore")]
-                    {
-                        ui.label(RichText::new(t!("modal-grant-sandbox")).weak());
-                        let mut dirs: Vec<&str> = modal.disks.iter().map(|d| d.dir.as_str()).collect();
-                        dirs.sort_unstable();
-                        dirs.dedup();
-                        for dir in dirs {
-                            if ui.button(t!("modal-grant-folder", path = dir)).clicked() {
-                                chd_choice = ChdGrantChoice::Grant(dir.to_string());
-                            }
-                        }
-                    }
-                    // Notarized macOS: the block is macOS Privacy (TCC), which a
-                    // folder pick doesn't override — the user allows IRIS in
-                    // System Settings, then re-checks (a relaunch may be needed
-                    // for Full Disk Access to take effect).
-                    #[cfg(not(feature = "appstore"))]
-                    {
-                        ui.label(RichText::new(t!("modal-grant-tcc")).weak());
-                        ui.horizontal(|ui| {
-                            if ui.button(t!("modal-grant-open-privacy")).clicked() {
-                                chd_choice = ChdGrantChoice::OpenPrivacy;
-                            }
-                            if ui.button(t!("modal-grant-recheck")).clicked() {
-                                chd_choice = ChdGrantChoice::Recheck;
-                            }
-                        });
-                    }
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui.button(t!("common-cancel")).clicked() { chd_choice = ChdGrantChoice::Cancel; }
-                        if ui.add(crate::extra_ui::filled_button(t!("modal-grant-start-anyway"), Color32::from_rgb(60, 90, 140))).clicked()
-                        {
-                            chd_choice = ChdGrantChoice::StartAnyway;
-                        }
-                    });
-                });
-        }
-        match chd_choice {
-            ChdGrantChoice::None => {}
-            ChdGrantChoice::Cancel => { self.chd_grant_modal = None; }
-            ChdGrantChoice::StartAnyway => {
-                self.chd_grant_modal = None;
-                self.skip_chd_grant_check = true; // one-shot bypass
-                self.start_emulator();
-            }
-            ChdGrantChoice::Grant(dir) => {
-                self.grant_disk_folder_at(Some(&dir));
-                // Re-probe: drop disks whose folder is now writable. When all are
-                // satisfied, dismiss and start; otherwise leave the rest listed.
-                if let Some(modal) = &mut self.chd_grant_modal {
-                    modal.disks.retain(|d| !dir_writable(std::path::Path::new(&d.dir)));
-                    if modal.disks.is_empty() {
-                        self.chd_grant_modal = None;
-                        self.start_emulator();
-                    }
-                }
-            }
-            ChdGrantChoice::OpenPrivacy => {
-                // Open System Settings → Privacy & Security → Full Disk Access so
-                // the user can add IRIS (the "+"). No-op off macOS.
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = std::process::Command::new("open")
-                        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
-                        .spawn();
-                }
-            }
-            ChdGrantChoice::Recheck => {
-                // Re-probe each listed folder; drop the ones now writable (the
-                // user allowed IRIS in System Settings). Mirrors the Grant path.
-                if let Some(modal) = &mut self.chd_grant_modal {
-                    modal.disks.retain(|d| !dir_writable(std::path::Path::new(&d.dir)));
-                    if modal.disks.is_empty() {
-                        self.chd_grant_modal = None;
-                        self.start_emulator();
-                    }
-                }
-            }
-        }
-
         // The window starts hidden so the first frame(s) can fit it to the
         // monitor (the launcher fit, when not running) before it's shown —
         // avoiding a visible open-then-resize. Reveal one frame after the fit
@@ -3701,63 +3095,6 @@ impl eframe::App for App {
         // Release the single-instance lock so the next launch sees a clean
         // start (a crash that skips this just leaves a stale, harmless pidfile).
         single_instance::release();
-    }
-}
-
-// --- platform dialogs ------------------------------------------------------
-//
-// Screenshot save panels open in the selected machine folder.
-fn native_save_dialog(title: &str, filters: &[(&str, &[&str])]) -> Option<PathBuf> {
-    filedialog::dialog_with(title, "", filedialog::Anchor::Data,
-                            filedialog::Purpose::Save, filters).save_file()
-}
-
-#[cfg(test)]
-mod preflight_tests {
-    use super::disk_readable;
-    use std::io::Write;
-
-    #[test]
-    fn empty_and_missing_paths_are_not_readable() {
-        assert!(!disk_readable(""));
-        assert!(!disk_readable("/no/such/iris/disk/image.chd"));
-    }
-
-    #[test]
-    fn an_existing_readable_file_is_readable() {
-        let mut p = std::env::temp_dir();
-        p.push(format!("iris_readable_{}.raw", std::process::id()));
-        std::fs::File::create(&p).unwrap().write_all(b"\0\0\0\0").unwrap();
-        assert!(disk_readable(&p.to_string_lossy()));
-        let _ = std::fs::remove_file(&p);
-    }
-
-    // The case the sandbox actually hits: a file that exists (so Path::exists()
-    // is true) but cannot be opened. Simulated with chmod 000. Skipped when the
-    // test runs as root, where DAC permission checks are bypassed and the open
-    // would still succeed.
-    #[cfg(unix)]
-    #[test]
-    fn an_unreadable_but_present_file_is_not_readable() {
-        use std::os::unix::fs::PermissionsExt;
-        if unsafe { libc_geteuid() } == 0 {
-            return; // root bypasses 000 perms; the distinction can't be shown
-        }
-        let mut p = std::env::temp_dir();
-        p.push(format!("iris_unreadable_{}.raw", std::process::id()));
-        std::fs::File::create(&p).unwrap().write_all(b"\0\0\0\0").unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
-        // exists() says present, but disk_readable() must say no.
-        assert!(p.exists());
-        assert!(!disk_readable(&p.to_string_lossy()));
-        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
-        let _ = std::fs::remove_file(&p);
-    }
-
-    #[cfg(unix)]
-    extern "C" {
-        #[link_name = "geteuid"]
-        fn libc_geteuid() -> u32;
     }
 }
 
@@ -3839,7 +3176,7 @@ mod machine_storage_integration {
         let root = PathBuf::from(root);
         std::env::set_var("IRIS_NO_EXIT_ON_POWEROFF", "1");
         let mut prefs = GuiSettings::load_in(root.clone(), launch_dir());
-        let mut cfg = MachineConfig::default();
+        let mut cfg = iris::config::MachineConfig::default();
         cfg.banks = iris::config::banks_from4([8, 8, 0, 0]);
         cfg.scsi.clear();
         cfg.headless = true;

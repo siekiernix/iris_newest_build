@@ -1,4 +1,5 @@
 use crate::model::framebuffer::{new_capture_renderer, FrameSink};
+use crate::model::job::Notify;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use iris::block_node::BlockNode;
 use iris::config::{MachineConfig, PortForwardConfig};
@@ -76,7 +77,7 @@ pub enum Evt {
     CowDone { committed: bool },
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Status {
     pub running: bool,
     /// CPU is currently in PROM (not yet booted IRIX, or post-halt).
@@ -118,6 +119,52 @@ pub struct Status {
     /// builds; `PermissionDenied` when a pcap-mode machine couldn't open the raw
     /// capture, which drives the "Enable packet capture" elevation prompt.
     pub pcap_status: iris::net::PcapStatus,
+    /// Disk activity since the previous tick, per disk bus then per SCSI id
+    /// (the order of `Workstation::disk_activity`).
+    pub disks: Vec<Vec<DiskMoved>>,
+    /// The sound card moved frames since the previous tick.
+    pub audio_moving: bool,
+    /// The machine has a sound card at all.
+    pub has_audio: bool,
+}
+
+/// What one disk did between two status ticks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiskMoved {
+    pub read: bool,
+    pub wrote: bool,
+}
+
+/// The disk and audio counters as last sampled, to turn the core's
+/// monotonic counts into "moved since the last tick".
+#[derive(Default)]
+struct LightSampler {
+    disks: Vec<Vec<iris::scsi::DiskCounts>>,
+    audio: Option<u64>,
+}
+
+impl LightSampler {
+    fn sample(&mut self, m: &dyn Workstation) -> (Vec<Vec<DiskMoved>>, bool, bool) {
+        let disks = m.disk_activity();
+        let audio = m.audio_frames();
+        let moved = disks
+            .iter()
+            .enumerate()
+            .map(|(b, bus)| {
+                bus.iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let prev = self.disks.get(b).and_then(|p| p.get(i)).copied().unwrap_or(*c);
+                        DiskMoved { read: c.reads > prev.reads, wrote: c.writes > prev.writes }
+                    })
+                    .collect()
+            })
+            .collect();
+        let audio_moving = matches!((self.audio, audio), (Some(a), Some(b)) if b > a);
+        self.disks = disks;
+        self.audio = audio;
+        (moved, audio_moving, audio.is_some())
+    }
 }
 
 impl Status {
@@ -137,6 +184,9 @@ impl Status {
         self.net_guest_gateway = s.net_guest_gateway;
         self.net_nat_gateway = s.net_nat_gateway;
         self.pcap_status = s.pcap_status;
+        self.disks = s.disks.clone();
+        self.audio_moving = s.audio_moving;
+        self.has_audio = s.has_audio;
     }
 }
 
@@ -161,10 +211,10 @@ impl RateMeter {
     }
 
     /// MIPS and Hz over the window since the last sample, or None when it is
-    /// under 0.1 s (the window then keeps growing).
+    /// under `RATE_WINDOW` (the window then keeps growing).
     fn sample(&mut self, now: std::time::Instant) -> Option<(f32, f32)> {
         let dt = now.duration_since(self.at).as_secs_f64();
-        if dt < 0.1 {
+        if dt < RATE_WINDOW {
             return None;
         }
         let cur = Self::read(&self.cpus);
@@ -174,6 +224,11 @@ impl RateMeter {
         Some(rates)
     }
 }
+
+/// The shortest window the MIPS and Hz figures are measured over. The status
+/// tick is faster (for the activity lights); the rates keep their last value
+/// in between.
+const RATE_WINDOW: f64 = 0.45;
 
 /// MIPS and Hz over `dt` seconds between two counter samples, one
 /// `(retired cycles, clock ticks)` pair per CPU, CPU 0 first. MIPS is the
@@ -236,7 +291,8 @@ pub struct EmulatorHandle {
 }
 
 impl EmulatorHandle {
-    pub fn spawn() -> Self {
+    /// Start the worker. `notify` wakes the shell whenever an event is queued.
+    pub fn spawn(notify: Arc<dyn Notify>) -> Self {
         let (cmd_tx, cmd_rx) = unbounded::<Cmd>();
         let pending_commands = Arc::new(AtomicUsize::new(0));
         let pending_for_worker = pending_commands.clone();
@@ -259,7 +315,7 @@ impl EmulatorHandle {
             // worker generous headroom. This is virtual address space, lazily
             // committed, so the large reservation has no real cost.
             .stack_size(64 * 1024 * 1024)
-            .spawn(move || worker_loop(cmd_rx, evt_tx, sink_for_worker, sink_head1_for_worker, ps2_for_worker, pending_for_worker, abandoned_for_worker))
+            .spawn(move || worker_loop(Events { tx: evt_tx, notify }, sink_for_worker, sink_head1_for_worker, ps2_for_worker, pending_for_worker, abandoned_for_worker, cmd_rx))
             .expect("spawn iris-gui-emu thread");
         Self {
             cmd_tx,
@@ -405,7 +461,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         let mut m = RateMeter::new(Vec::new(), t0);
         assert_eq!(m.sample(t0 + std::time::Duration::from_millis(50)), None);
-        assert_eq!(m.sample(t0 + std::time::Duration::from_millis(200)), Some((0.0, 0.0)));
+        assert_eq!(m.sample(t0 + std::time::Duration::from_millis(500)), Some((0.0, 0.0)));
     }
 
     #[test]
@@ -425,14 +481,28 @@ mod tests {
 /// thread sends `Cmd`s and drains `Evt`s, never touching the machine
 /// directly. All `Machine` calls are wrapped in `catch_unwind` so a panic
 /// becomes an `Evt::Error` toast rather than killing the worker.
+/// The worker's event channel: every send wakes the shell.
+struct Events {
+    tx: Sender<Evt>,
+    notify: Arc<dyn Notify>,
+}
+
+impl Events {
+    fn send(&self, evt: Evt) -> Result<(), crossbeam_channel::SendError<Evt>> {
+        let r = self.tx.send(evt);
+        self.notify.wake();
+        r
+    }
+}
+
 fn worker_loop(
-    cmd_rx: Receiver<Cmd>,
-    evt_tx: Sender<Evt>,
+    evt_tx: Events,
     frame_sink: FrameSink,
     frame_sink_head1: FrameSink,
     ps2_slot: Arc<Mutex<Option<Arc<Ps2Controller>>>>,
     pending_commands: Arc<AtomicUsize>,
     abandoned_machine: Arc<AtomicBool>,
+    cmd_rx: Receiver<Cmd>,
 ) {
     let mut machine: Option<Box<dyn Workstation>> = None;
     // The built-in VNC server, when `[vnc] listen` is set. Lives exactly as
@@ -442,8 +512,14 @@ fn worker_loop(
     // Live rates: sum every CPU's cycle deltas and use CPU 0's fast-clock
     // counter over the wall-clock window. `None` until a machine is up.
     let mut meter: Option<RateMeter> = None;
-    // Tick cadence for the status poll while idle on the command channel.
-    const STATUS_TICK: std::time::Duration = std::time::Duration::from_millis(500);
+    let mut lights = LightSampler::default();
+    // The last MIPS and Hz, carried between rate windows.
+    let mut rates = (0.0f32, 0.0f32);
+    let mut last_status: Option<Status> = None;
+    // Tick cadence for the status poll while idle on the command channel: fast
+    // enough for a disk light to blink; the rates are measured over a longer
+    // window (RATE_WINDOW). Reading the counters costs a few atomic loads.
+    const STATUS_TICK: std::time::Duration = std::time::Duration::from_millis(100);
     loop {
         let command = cmd_rx.recv_timeout(STATUS_TICK);
         // RAII covers all early continues and returns in command handlers.
@@ -451,25 +527,35 @@ fn worker_loop(
         match command {
             // Periodic tick (no command pending): refresh the MIPS estimate.
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                if let Some((mips, kernel_hz)) = meter.as_mut().and_then(|m| m.sample(std::time::Instant::now())) {
-                    // A stopped CPU thread can signal guest power-off. Zero
-                    // throughput can also mean an idle or halted guest; keep
-                    // that separate from the actual thread lifecycle.
-                    let cpu_stopped = machine.as_ref().map_or(true, |m| !m.cpu_is_running());
-                    let cpu_halted = cpu_stopped || mips == 0.0;
-                    let chd_sync_pending = machine.as_ref().map_or(false, |m| m.pending_chd_sync_count() > 0);
-                    let net_frames = machine.as_ref().map_or(0, |m| m.net_guest_frames());
-                    let net_guest_ip = machine.as_ref().and_then(|m| m.net_observed_guest_ip());
-                    let net_guest_gateway = machine.as_ref().and_then(|m| m.net_observed_gateway());
-                    let net_nat_gateway = machine.as_ref().and_then(|m| m.nat_expected()).map(|(_, gw, _)| gw);
-                    let pcap_status = machine.as_ref()
-                        .map_or(iris::net::PcapStatus::Inactive, |m| m.net_pcap_status());
-                    let _ = evt_tx.send(Evt::Status(Status {
-                        mips, kernel_hz, cpu_halted, cpu_stopped, chd_sync_pending,
-                        net_frames, net_guest_ip, net_guest_gateway, net_nat_gateway,
-                        pcap_status,
-                        ..Status::default()
-                    }));
+                let Some(m) = meter.as_mut() else { continue };
+                if let Some(r) = m.sample(std::time::Instant::now()) {
+                    rates = r;
+                }
+                let (mips, kernel_hz) = rates;
+                // A stopped CPU thread can signal guest power-off. Zero
+                // throughput can also mean an idle or halted guest; keep
+                // that separate from the actual thread lifecycle.
+                let cpu_stopped = machine.as_ref().map_or(true, |m| !m.cpu_is_running());
+                let cpu_halted = cpu_stopped || mips == 0.0;
+                let chd_sync_pending = machine.as_ref().map_or(false, |m| m.pending_chd_sync_count() > 0);
+                let net_frames = machine.as_ref().map_or(0, |m| m.net_guest_frames());
+                let net_guest_ip = machine.as_ref().and_then(|m| m.net_observed_guest_ip());
+                let net_guest_gateway = machine.as_ref().and_then(|m| m.net_observed_gateway());
+                let net_nat_gateway = machine.as_ref().and_then(|m| m.nat_expected()).map(|(_, gw, _)| gw);
+                let pcap_status = machine.as_ref()
+                    .map_or(iris::net::PcapStatus::Inactive, |m| m.net_pcap_status());
+                let (disks, audio_moving, has_audio) =
+                    machine.as_ref().map_or((Vec::new(), false, false), |m| lights.sample(&**m));
+                let status = Status {
+                    mips, kernel_hz, cpu_halted, cpu_stopped, chd_sync_pending,
+                    net_frames, net_guest_ip, net_guest_gateway, net_nat_gateway,
+                    pcap_status, disks, audio_moving, has_audio,
+                    ..Status::default()
+                };
+                // Only a change is news: an idle guest costs the shell no wakes.
+                if last_status.as_ref() != Some(&status) {
+                    last_status = Some(status.clone());
+                    let _ = evt_tx.send(Evt::Status(status));
                 }
                 continue;
             }
@@ -533,6 +619,9 @@ fn worker_loop(
                         // A headless machine has none, and then sends no tick.
                         let counters = m.cpu_counters();
                         meter = (!counters.is_empty()).then(|| RateMeter::new(counters, std::time::Instant::now()));
+                        rates = (0.0, 0.0);
+                        last_status = None;
+                        lights = LightSampler::default();
                         // The built-in VNC server, if `[vnc] listen` is set.
                         // The GUI builds its own machine, so without this the
                         // Performance tab's VNC settings would be config the

@@ -219,6 +219,72 @@ pub fn save(root: &Path, name: &str, cfg: &mut MachineConfig) -> Result<(), Stri
     write(&config_path(root, name)?, &text)
 }
 
+/// True if `path` can actually be *read*. The start preflight uses this rather
+/// than `Path::exists()`: under the macOS App Sandbox a file picked in an
+/// earlier session with no bookmark still `stat()`s as present, and the
+/// sandbox can permit `open()` yet deny `read()`, so only a real read tells.
+pub fn readable(path: &str) -> bool {
+    use std::io::Read;
+    if iris::http_disk::is_url(path) {
+        return true; // read over the network, not through the sandbox
+    }
+    if path.is_empty() {
+        return false;
+    }
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut probe = [0u8; 1];
+    matches!(f.read(&mut probe), Ok(n) if n >= 1)
+}
+
+/// True if a file can be created (and removed) in `dir`: write access to the
+/// folder itself. The exit-time CHD fold writes a temp beside the base and
+/// renames it over it, which a file-scoped sandbox grant does not allow.
+pub fn dir_writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".iris-write-probe-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// A writable CHD disk whose folder the app cannot write, so its exit-time
+/// fold would be refused (macOS only: the sandbox, or TCC on a notarized build).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChdNeedsGrant {
+    pub key: u8,
+    pub path: String,
+    /// The folder that needs a grant, absolute.
+    pub dir: String,
+}
+
+/// The attached CHD disks (not CD-ROMs, not scratch) in folders the app cannot
+/// write. Empty off macOS. Relative paths are taken against the working
+/// directory, which is the machine's folder.
+pub fn chd_dirs_needing_grant(cfg: &MachineConfig) -> Vec<ChdNeedsGrant> {
+    if !cfg!(target_os = "macos") || cfg.machine.profile.is_ip35_bricks() {
+        return Vec::new();
+    }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut out: Vec<_> = cfg
+        .scsi
+        .iter()
+        .filter(|(_, d)| !d.scratch && !d.is_cdrom() && d.path.ends_with(".chd"))
+        .filter_map(|(&key, d)| {
+            let parent = resolve(&cwd, &d.path).parent()?.to_path_buf();
+            (!dir_writable(&parent)).then(|| ChdNeedsGrant {
+                key,
+                path: d.path.clone(),
+                dir: parent.to_string_lossy().into_owned(),
+            })
+        })
+        .collect();
+    out.sort_by_key(|c| c.key);
+    out
+}
+
 /// Make `dir` the process working directory, creating it and its `disks`
 /// folder first. Paths in a machine's TOML are relative to its folder, and the
 /// emulator resolves them against the working directory.
@@ -790,5 +856,54 @@ pub(crate) mod tests {
             .join(diff_name(&migrated.scsi[&1].path));
         assert_eq!(std::fs::read(new_diff).unwrap(), b"guest writes");
         assert!(old_diff.exists());
+    }
+}
+
+#[cfg(test)]
+mod readable_tests {
+    use super::readable as disk_readable;
+    use std::io::Write;
+
+    #[test]
+    fn empty_and_missing_paths_are_not_readable() {
+        assert!(!disk_readable(""));
+        assert!(!disk_readable("/no/such/iris/disk/image.chd"));
+    }
+
+    #[test]
+    fn an_existing_readable_file_is_readable() {
+        let mut p = std::env::temp_dir();
+        p.push(format!("iris_readable_{}.raw", std::process::id()));
+        std::fs::File::create(&p).unwrap().write_all(b"\0\0\0\0").unwrap();
+        assert!(disk_readable(&p.to_string_lossy()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    // The case the sandbox actually hits: a file that exists (so Path::exists()
+    // is true) but cannot be opened. Simulated with chmod 000. Skipped when the
+    // test runs as root, where DAC permission checks are bypassed and the open
+    // would still succeed.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_but_present_file_is_not_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc_geteuid() } == 0 {
+            return; // root bypasses 000 perms; the distinction can't be shown
+        }
+        let mut p = std::env::temp_dir();
+        p.push(format!("iris_unreadable_{}.raw", std::process::id()));
+        std::fs::File::create(&p).unwrap().write_all(b"\0\0\0\0").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // exists() says present, but disk_readable() must say no.
+        assert!(p.exists());
+        assert!(!disk_readable(&p.to_string_lossy()));
+        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(unix)]
+    extern "C" {
+        #[link_name = "geteuid"]
+        fn libc_geteuid() -> u32;
     }
 }

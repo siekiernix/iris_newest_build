@@ -17,7 +17,7 @@ CONTRIBUTING section before writing a controller.
 |---|---|
 | Branch `core-activity-counters` | Merged into `main` as PR techomancer/iris#797 (2026-11-22). |
 | Branch `iris-newgui` | Rebased onto `main` after #797 merged (2026-11-22). Local only, never pushed. Holds this plan and the GUI work. |
-| GUI code | Phase 2 under way: App slice done (library, folders, duplicate, quit guard on `AppController`; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
+| GUI code | Phase 2 under way: App and Session slices done (library, folders, duplicate, quit guard; power on/off with the preflights as controller questions, saved states, discs, copy-on-write, NVRAM reset, status-bar lights from the core counters; egui rewired). Phases 0 and 1 done: `iris-gui/core` (`iris-gui-core`) with the controller contract, ids, keys, labels, icons, `model::job`, and `iris-gui/scripts/check-boundaries.sh`; the toolkit-free modules live in `core/src/model` (plus `hardware.rs`, the pure profile helpers from `extra_ui.rs`). |
 | Mock-ups | **Not in the repository, by the user's decision; do not commit mock-ups or screenshots.** Seven boards (stopped, running and settings in light and dark, and the macOS menu bar) are in the git-ignored `ignore/mockups/` on the user's machine, with their sources in `src/` (`node expand.js <in> <out.html> [light|dark]` makes plain HTML) and the annotated feedback screenshot; ask the user if the folder is absent. They predate the feedback in [Design changes from feedback](#design-changes-from-feedback-2026-11-21), so [The window](#the-window) is the specification. |
 | Unrelated finding | `kona-tile-handoff-race.md`: a real hang in the KONA tile scheduler, test ignored, not fixed. Not part of this work. |
 
@@ -483,6 +483,23 @@ Not approved, ask first: a serial counter in the core; anything else in
   profile has a `MachineIcon` in the `ProfileTraits` table; a shell maps it to
   a picture, falling back to a generic glyph. Changing the answer is one match
   per shell.
+- **Session actions go through the app** (`AppAction::Session`): power on
+  reads the TOML and checks it, a disc insert edits the config when stopped,
+  a folder grant writes the preferences. The preflights (missing disks, CHD
+  folders the app cannot write, safe stop) are `Choose` questions.
+- **Status tick split** (implementer question): the worker ticks every 100 ms
+  and samples the disk and audio counters each tick; MIPS and Hz are measured
+  over at least 0.45 s and carried between. A `Status` is sent only when it
+  changed, and every event wakes the shell through `Notify`, so an idle guest
+  costs no wakes and no shell polls.
+- **Saved states** (implementer question) are listed by scanning
+  `saves/<name>/` in the machine folder (`snapshot.toml`'s time, the folder's
+  size); no index. Restore while stopped powers on, then restores.
+- **Lights**: one per configured SCSI disk and CD-ROM (bus = controller,
+  then id), network, audio. NVMe and Fibre Channel disks have no light yet.
+  The camera light is dropped: nothing in the core says the camera is in use.
+  The serial light comes with the serial console controller.
+- **Reset NVRAM** now asks first; it loses PROM `setenv` settings.
 - **Interim accessors.** `AppController::config_mut`, `prefs_mut` and
   `SessionController::handle{,_mut}` are `#[doc(hidden)]` bridges for egui
   code not yet on a controller; each slice removes its uses, and they go when

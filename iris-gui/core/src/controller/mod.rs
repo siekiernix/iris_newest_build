@@ -24,6 +24,7 @@ pub mod icons;
 pub mod ids;
 pub mod keys;
 pub mod labels;
+mod power;
 pub mod profile;
 pub mod session;
 
@@ -106,6 +107,8 @@ pub enum Effect {
     /// Show a file or folder in the host's file manager.
     RevealPath(PathBuf),
     CopyToClipboard(String),
+    /// Show the machine settings at a page (`ids::settings`).
+    OpenSettings(&'static str),
     /// Quit the application; every guard (running machine, disk sync) passed.
     Quit,
 }

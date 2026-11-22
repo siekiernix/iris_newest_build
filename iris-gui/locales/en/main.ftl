@@ -111,7 +111,6 @@ menu-machine-restore-state = Restore state
 menu-machine-restore = Restore
 menu-machine-screenshot = Screenshot…
 # Title of the save dialog.
-menu-machine-screenshot-title = Save screenshot
 menu-machine-serial-console = Serial console…
 menu-machine-serial-console-tip = Shows the IRIX serial console.
 
@@ -515,14 +514,12 @@ modal-missing-body = These disk images are missing or can't be read:
 modal-missing-cdrom = SCSI { $id } (CD-ROM): { $path }
 modal-missing-disk = SCSI { $id } (disk): { $path }
 modal-missing-sandbox = If a file exists but is listed here, macOS has withdrawn access to it. Choose it again on the Disks tab.
-modal-missing-subtitle =
 modal-missing-edit = Open Disks tab
 modal-missing-detach = Remove missing and start
 modal-grant-title = Allow access to disk folders
 modal-grant-body = IRIS can't write to the folders holding these CHD disks:
 modal-grant-disk = SCSI { $id }: { $path }
 modal-grant-why = A compressed CHD keeps this session's changes in a separate file and merges them into the disk when you quit. That needs write access to the disk's folder. Without it, the change file keeps growing.
-modal-grant-subtitle =
 modal-grant-sandbox = Grant access to the folder so IRIS can merge changes on quit:
 modal-grant-folder = Grant { $path }…
 modal-grant-tcc = macOS is blocking access to these folders. Allow IRIS in System Settings > Privacy & Security, under Files and Folders or Full Disk Access, then check again. Full Disk Access may need IRIS to be reopened.

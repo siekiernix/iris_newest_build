@@ -47,3 +47,11 @@ pub mod status {
         format!("status.disk.{controller}.{id}")
     }
 }
+
+/// Pages of the machine settings, for `Effect::OpenSettings`.
+pub mod settings {
+    pub const GENERAL: &str = "settings.general";
+    pub const DISKS: &str = "settings.disks";
+    pub const NETWORK: &str = "settings.network";
+    pub const DISPLAY: &str = "settings.display";
+}
