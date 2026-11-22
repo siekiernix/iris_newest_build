@@ -54,3 +54,5 @@ prefs-filter = Smoothing
 prefs-filter-auto = Sharp at whole multiples
 prefs-filter-nearest = Always sharp
 prefs-filter-linear = Always smooth
+settings-pin-first = Turn on Pin threads to cores first.
+settings-performance-summary = Host threads, the JIT and the VNC server

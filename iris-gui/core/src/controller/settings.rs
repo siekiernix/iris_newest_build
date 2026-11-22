@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use iris::config::{
     ForwardBind, ForwardProto, GraphicsBoard, MachineConfig, MachineProfile, NetMode, PortForwardConfig,
-    ScsiDeviceConfig, ScsiKind, VALID_BANK_SIZES,
+    ScsiDeviceConfig, ScsiKind, VinoSource, VinoStandard, VALID_BANK_SIZES,
 };
 use iris::dev::ng1::vc2_timings::NewportResolution;
 
@@ -38,6 +38,20 @@ pub mod field {
     pub const NAT_SUBNET: &str = "settings.network.nat-subnet";
     pub const PCAP_INTERFACE: &str = "settings.network.pcap-interface";
     pub const FORWARDS: &str = "settings.network.forwards";
+    pub const VINO_SOURCE: &str = "settings.video-in.source";
+    pub const VINO_STANDARD: &str = "settings.video-in.standard";
+    pub const VINO_CAMERA: &str = "settings.video-in.camera";
+    pub const AFFINITY: &str = "settings.performance.affinity";
+    pub const CPU_CORE: &str = "settings.performance.cpu-core";
+    pub const REX3_CORE: &str = "settings.performance.rex3-core";
+    pub const REFRESH_CORE: &str = "settings.performance.refresh-core";
+    pub const JIT_THREADS_AUTO: &str = "settings.performance.jit-threads-auto";
+    pub const JIT_THREADS: &str = "settings.performance.jit-threads";
+    pub const JIT_CACHE: &str = "settings.performance.jit-cache";
+    pub const JIT_CACHE_DIR: &str = "settings.performance.jit-cache-dir";
+    pub const VNC_LISTEN: &str = "settings.performance.vnc-listen";
+    pub const VNC_FPS: &str = "settings.performance.vnc-fps";
+    pub const VNC_PASSWORD: &str = "settings.performance.vnc-password";
     pub const TOML: &str = "settings.advanced.toml";
     pub const NOTE: &str = "settings.note";
 }
@@ -70,6 +84,16 @@ pub struct ForwardRow {
     pub host_port: u16,
     pub guest_port: u16,
     pub any_interface: bool,
+}
+
+impl FieldKind {
+    /// A choice's selected option, as a summary line.
+    pub fn choice_label(&self) -> Option<String> {
+        match self {
+            FieldKind::Choice { options, selected } => options.get(*selected).cloned(),
+            _ => None,
+        }
+    }
 }
 
 /// How a field is edited. A shell draws each kind once.
@@ -208,7 +232,10 @@ pub fn action_for(id: &str, value: Value, disk_keys: &[u8], forwards: &[ForwardR
     let field = [
         field::PROFILE, field::CPU, field::CPUS, field::PROM, field::BUILTIN_PROM, field::NVRAM, field::NVEEPROM,
         field::BANKS, field::BOARD, field::HEADS, field::RESOLUTION, field::DISKS, field::NET_MODE, field::NAT_SUBNET,
-        field::PCAP_INTERFACE, field::FORWARDS, field::TOML,
+        field::PCAP_INTERFACE, field::FORWARDS, field::TOML, field::VINO_SOURCE, field::VINO_STANDARD,
+        field::VINO_CAMERA, field::AFFINITY, field::CPU_CORE, field::REX3_CORE, field::REFRESH_CORE,
+        field::JIT_THREADS_AUTO, field::JIT_THREADS, field::JIT_CACHE, field::JIT_CACHE_DIR, field::VNC_LISTEN,
+        field::VNC_FPS, field::VNC_PASSWORD,
     ]
     .into_iter()
     .find(|x| *x == f)?;
@@ -522,6 +549,136 @@ impl SettingsController {
             fields: f,
         });
 
+        // Video in: the Indy's VINO input.
+        if p == MachineProfile::IndyIp24 {
+            let src = VINO_SOURCES.iter().position(|v| *v == cfg.vino.source).unwrap_or(0);
+            let mut f = vec![
+                Field {
+                    id: field::VINO_SOURCE,
+                    label: t!("config-vino-source"),
+                    help: None,
+                    kind: FieldKind::Choice {
+                        options: vec![
+                            t!("config-vino-source-off"),
+                            t!("config-vino-source-test"),
+                            t!("config-vino-source-camera"),
+                            t!("config-vino-source-black"),
+                        ],
+                        selected: src,
+                    },
+                    enabled: at_power_on(),
+                },
+                Field {
+                    id: field::VINO_STANDARD,
+                    label: t!("config-vino-standard"),
+                    help: None,
+                    kind: FieldKind::Choice {
+                        options: vec![t!("config-vino-ntsc"), t!("config-vino-pal")],
+                        selected: usize::from(cfg.vino.standard == VinoStandard::Pal),
+                    },
+                    enabled: at_power_on(),
+                },
+            ];
+            if cfg.vino.source == VinoSource::Camera {
+                f.push(Field {
+                    id: field::VINO_CAMERA,
+                    label: t!("config-vino-camera"),
+                    help: None,
+                    kind: FieldKind::Number { value: cfg.vino.camera_index as f64, min: 0.0, max: 15.0, step: 1.0, unit: String::new() },
+                    enabled: at_power_on(),
+                });
+            }
+            out.push(Section {
+                id: "settings.video-in",
+                title: t!("config-tab-video-in"),
+                summary: f[0].kind.choice_label().unwrap_or_default(),
+                icon: Icon::Camera,
+                fields: f,
+            });
+        }
+
+        // Performance: host threads, the JIT, the VNC server.
+        let cores = std::thread::available_parallelism().map_or(8, |n| n.get()).max(1) as f64;
+        let pinned = Enabled::when(cfg.perf.thread_affinity, || t!("settings-pin-first"));
+        let core = |id, label: String, value: Option<u32>, default: u32| Field {
+            id,
+            label,
+            help: None,
+            kind: FieldKind::Number { value: value.unwrap_or(default) as f64, min: 0.0, max: cores - 1.0, step: 1.0, unit: String::new() },
+            enabled: pinned.clone(),
+        };
+        let mut f = vec![
+            Field {
+                id: field::AFFINITY,
+                label: t!("config-perf-affinity"),
+                help: Some(t!("config-perf-affinity-tip")),
+                kind: FieldKind::Toggle(cfg.perf.thread_affinity),
+                enabled: at_power_on(),
+            },
+            core(field::CPU_CORE, t!("config-perf-cpu-core"), cfg.perf.cpu_core, 0),
+            core(field::REX3_CORE, t!("config-perf-rex3-core"), cfg.perf.rex3_core, 1),
+            core(field::REFRESH_CORE, t!("config-perf-refresh-core"), cfg.perf.refresh_core, 2),
+        ];
+        if iris::build_features::JITV2 {
+            let auto = !cfg.jitv2_threads_set;
+            f.push(Field {
+                id: field::JIT_THREADS_AUTO,
+                label: t!("config-jit-threads-auto"),
+                help: Some(t!("config-jit-threads-auto-tip")),
+                kind: FieldKind::Toggle(auto),
+                enabled: at_power_on(),
+            });
+            f.push(Field {
+                id: field::JIT_THREADS,
+                label: t!("config-jit-threads"),
+                help: None,
+                kind: FieldKind::Number { value: cfg.jitv2.threads as f64, min: 1.0, max: cores, step: 1.0, unit: String::new() },
+                enabled: Enabled::when(!auto, || t!("config-jit-threads-auto-tip")),
+            });
+            f.push(Field {
+                id: field::JIT_CACHE,
+                label: t!("config-jit-cache"),
+                help: None,
+                kind: FieldKind::Toggle(cfg.jitv2.cache),
+                enabled: at_power_on(),
+            });
+            f.push(Field {
+                id: field::JIT_CACHE_DIR,
+                label: t!("config-jit-cache-dir"),
+                help: None,
+                kind: FieldKind::Text { value: cfg.jitv2.cache_dir.clone(), placeholder: t!("config-jit-cache-dir-hint"), error: None },
+                enabled: Enabled::when(cfg.jitv2.cache, || t!("config-jit-cache")),
+            });
+        }
+        f.push(Field {
+            id: field::VNC_LISTEN,
+            label: t!("config-vnc-listen"),
+            help: Some(t!("config-vnc-listen-tip")),
+            kind: FieldKind::Text { value: cfg.vnc.listen.clone().unwrap_or_default(), placeholder: t!("config-vnc-listen-hint"), error: None },
+            enabled: at_power_on(),
+        });
+        f.push(Field {
+            id: field::VNC_FPS,
+            label: t!("config-vnc-max-fps"),
+            help: None,
+            kind: FieldKind::Number { value: cfg.vnc.max_fps.unwrap_or(30) as f64, min: 1.0, max: 120.0, step: 1.0, unit: String::new() },
+            enabled: at_power_on(),
+        });
+        f.push(Field {
+            id: field::VNC_PASSWORD,
+            label: t!("config-vnc-password-file"),
+            help: Some(t!("config-vnc-password-file-tip")),
+            kind: FieldKind::Path { value: cfg.vnc.password_file.clone().unwrap_or_default(), pick: any_file() },
+            enabled: at_power_on(),
+        });
+        out.push(Section {
+            id: "settings.performance",
+            title: t!("config-tab-performance"),
+            summary: t!("settings-performance-summary"),
+            icon: Icon::Check,
+            fields: f,
+        });
+
         // Advanced: every key, as TOML.
         out.push(Section {
             id: "settings.advanced",
@@ -553,7 +710,7 @@ impl SettingsController {
             SettingsAction::Pick(field) => {
                 let title = t!("common-browse");
                 let spec = match field {
-                    field::PROM | field::NVRAM | field::NVEEPROM => PickSpec::open(PICK, title).in_dir(dir),
+                    field::PROM | field::NVRAM | field::NVEEPROM | field::VNC_PASSWORD => PickSpec::open(PICK, title).in_dir(dir),
                     _ => return (false, fx),
                 };
                 self.picking = Some((field, None));
@@ -700,6 +857,18 @@ fn net_mode_label(m: NetMode) -> String {
     }
 }
 
+/// The Video In source popup's order.
+const VINO_SOURCES: [VinoSource; 4] = [VinoSource::Off, VinoSource::TestPattern, VinoSource::Camera, VinoSource::Black];
+
+/// Set `slot` to `v`; whether it changed.
+fn set_num<T: PartialEq>(slot: &mut T, v: T) -> bool {
+    if *slot == v {
+        return false;
+    }
+    *slot = v;
+    true
+}
+
 fn set(cfg: &mut MachineConfig, field: &'static str, value: Value) -> bool {
     let p = cfg.machine.profile;
     match (field, value) {
@@ -735,6 +904,46 @@ fn set(cfg: &mut MachineConfig, field: &'static str, value: Value) -> bool {
                 cfg.prom = iris::config::DEFAULT_PROM.into();
             }
             true
+        }
+        (field::VINO_SOURCE, Value::Index(i)) => match VINO_SOURCES.get(i) {
+            Some(v) => set_num(&mut cfg.vino.source, v.clone()),
+            None => false,
+        },
+        (field::VINO_STANDARD, Value::Index(i)) => {
+            let v = if i == 1 { VinoStandard::Pal } else { VinoStandard::Ntsc };
+            let changed = v != cfg.vino.standard;
+            cfg.vino.standard = v;
+            changed
+        }
+        (field::VINO_CAMERA, Value::Number(n)) => set_num(&mut cfg.vino.camera_index, n.round().clamp(0.0, 15.0) as _),
+        (field::AFFINITY, Value::Bool(b)) => set_num(&mut cfg.perf.thread_affinity, b),
+        (field::CPU_CORE, Value::Number(n)) => set_num(&mut cfg.perf.cpu_core, Some(n.max(0.0) as u32)),
+        (field::REX3_CORE, Value::Number(n)) => set_num(&mut cfg.perf.rex3_core, Some(n.max(0.0) as u32)),
+        (field::REFRESH_CORE, Value::Number(n)) => set_num(&mut cfg.perf.refresh_core, Some(n.max(0.0) as u32)),
+        (field::JIT_THREADS_AUTO, Value::Bool(auto)) => {
+            if cfg.jitv2_threads_set == !auto {
+                return false;
+            }
+            cfg.jitv2_threads_set = !auto;
+            if auto {
+                cfg.settle_jitv2_threads();
+            }
+            true
+        }
+        (field::JIT_THREADS, Value::Number(n)) => {
+            cfg.jitv2_threads_set = true;
+            set_num(&mut cfg.jitv2.threads, (n.round().max(1.0)) as _)
+        }
+        (field::JIT_CACHE, Value::Bool(b)) => set_num(&mut cfg.jitv2.cache, b),
+        (field::JIT_CACHE_DIR, Value::Text(t)) => replace(&mut cfg.jitv2.cache_dir, t.trim().to_string()),
+        (field::VNC_LISTEN, Value::Text(t)) => {
+            let t = t.trim();
+            set_num(&mut cfg.vnc.listen, (!t.is_empty()).then(|| t.to_string()))
+        }
+        (field::VNC_FPS, Value::Number(n)) => set_num(&mut cfg.vnc.max_fps, Some(n.round().clamp(1.0, 120.0) as u32)),
+        (field::VNC_PASSWORD, Value::Text(t)) => {
+            let t = t.trim();
+            set_num(&mut cfg.vnc.password_file, (!t.is_empty()).then(|| t.to_string()))
         }
         (field::PROM, Value::Text(s)) => replace(&mut cfg.prom, s),
         (field::NVRAM, Value::Text(s)) => replace(&mut cfg.nvram, s),
@@ -853,6 +1062,31 @@ mod tests {
         let net = section(&s, super::super::ids::settings::NETWORK);
         let subnet = net.fields.iter().find(|f| f.id == field::NAT_SUBNET).unwrap();
         assert!(subnet.enabled.is_yes());
+    }
+
+    #[test]
+    fn video_in_and_performance_edit_the_config() {
+        let mut c = SettingsController::default();
+        let mut cfg = MachineConfig::default();
+        cfg.machine.profile = MachineProfile::IndyIp24;
+        let s = c.sections(&cfg, false);
+        assert!(s.iter().any(|x| x.id == "settings.video-in"));
+        let set = |c: &mut SettingsController, cfg: &mut MachineConfig, id, v| {
+            c.apply(action_for(id, v, &[], &[]).expect("an action"), cfg, None).0
+        };
+        assert!(set(&mut c, &mut cfg, field::VINO_SOURCE, Value::Index(2)));
+        assert_eq!(cfg.vino.source, VinoSource::Camera);
+        assert!(c.sections(&cfg, false).iter().flat_map(|s| &s.fields).any(|f| f.id == field::VINO_CAMERA));
+        assert!(set(&mut c, &mut cfg, field::AFFINITY, Value::Bool(true)));
+        assert!(set(&mut c, &mut cfg, field::REX3_CORE, Value::Number(3.0)));
+        assert_eq!(cfg.perf.rex3_core, Some(3));
+        assert!(set(&mut c, &mut cfg, field::VNC_LISTEN, Value::Text(" 5901 ".into())));
+        assert_eq!(cfg.vnc.listen.as_deref(), Some("5901"));
+        assert!(!set(&mut c, &mut cfg, field::VNC_LISTEN, Value::Text("5901".into())), "no change");
+        cfg.validate().unwrap();
+        // Only the Indy has VINO.
+        cfg.machine.profile = MachineProfile::O2Ip32;
+        assert!(!c.sections(&cfg, false).iter().any(|x| x.id == "settings.video-in"));
     }
 
     #[test]

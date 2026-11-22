@@ -394,8 +394,13 @@ pub fn field_view(mtm: MainThreadMarker, f: &Field, toml: &mut Option<Retained<N
     }
     let mut right: Vec<Retained<NSView>> = vec![control];
     if let Some(h) = &f.help {
-        let l = secondary(mtm, h);
+        // Wrap long help instead of widening the window.
+        let l = NSTextField::wrappingLabelWithString(&ns(h), mtm);
+        l.setSelectable(false);
+        l.setTextColor(Some(&NSColor::secondaryLabelColor()));
         l.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        l.setPreferredMaxLayoutWidth(440.0);
+        l.widthAnchor().constraintLessThanOrEqualToConstant(440.0).setActive(true);
         right.push(view(&l));
     }
     // Tables and the TOML editor are wide: their label goes above them.
