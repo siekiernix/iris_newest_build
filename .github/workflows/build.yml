@@ -187,9 +187,9 @@ jobs:
     name: macOS (universal)
     needs: [version, macos-build]
     runs-on: ${{ inputs.macos_runner || 'macos-26' }}
-    # Three notarization round trips. The ceiling leaves room for an
-    # Apple-side queue without hiding a hang.
-    timeout-minutes: 60
+    # Three notarization round trips, each retrying a dropped connection. The
+    # ceiling leaves room for an Apple-side queue without hiding a hang.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
         with:

@@ -66,19 +66,40 @@ elif [ "${#NOTARY[@]}" = 0 ]; then
     warn "$msg"
 fi
 
-# Submit a file and wait. notarytool exits 0 even for a rejected submission, so
-# read the status and print Apple's log when it is not Accepted.
+# Submit a file and wait for Apple's verdict, printing Apple's log when it is
+# not Accepted. The notary service sometimes drops a connection (a TLS error
+# while `notarytool submit --wait` polls), which used to fail the build with
+# the submission still in progress: submit, then poll, retrying both.
 notarize() {  # <file>
     [ "${#NOTARY[@]}" -gt 0 ] || return 0
-    local out id status
-    group_start "notarize $(basename "$1")"
-    out=$(xcrun notarytool submit "$1" "${NOTARY[@]}" --wait --output-format json)
+    local out="" id="" status="" try deadline name
+    name=$(basename "$1")
+    group_start "notarize $name"
+    for try in 1 2 3; do
+        if out=$(xcrun notarytool submit "$1" "${NOTARY[@]}" --output-format json 2>&1); then
+            id=$(printf '%s' "$out" | plutil -extract id raw -o - - 2>/dev/null || true)
+            [ -n "$id" ] && break
+        fi
+        warn "submitting $name for notarization failed (try $try): $out"
+        sleep 30
+    done
+    [ -n "$id" ] || die "could not submit $name for notarization"
+    echo "submitted $name: $id"
+    deadline=$(( $(date +%s) + 45 * 60 ))
+    while :; do
+        if out=$(xcrun notarytool info "$id" "${NOTARY[@]}" --output-format json 2>&1); then
+            status=$(printf '%s' "$out" | plutil -extract status raw -o - - 2>/dev/null || true)
+            [ -n "$status" ] && [ "$status" != "In Progress" ] && break
+        else
+            warn "asking for the notarization status of $name failed, retrying: $out"
+        fi
+        [ "$(date +%s)" -lt "$deadline" ] || die "notarization of $name ($id) did not finish within 45 minutes"
+        sleep 20
+    done
     echo "$out"
-    id=$(printf '%s' "$out" | plutil -extract id raw -o - - 2>/dev/null || true)
-    status=$(printf '%s' "$out" | plutil -extract status raw -o - - 2>/dev/null || true)
     if [ "$status" != "Accepted" ]; then
-        [ -n "$id" ] && xcrun notarytool log "$id" "${NOTARY[@]}" || true
-        die "notarization of $(basename "$1") finished as '${status:-unknown}'"
+        xcrun notarytool log "$id" "${NOTARY[@]}" || true
+        die "notarization of $name finished as '${status:-unknown}'"
     fi
     group_end
 }
