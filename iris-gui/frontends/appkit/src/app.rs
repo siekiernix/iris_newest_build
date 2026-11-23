@@ -87,6 +87,15 @@ define_class!(
             AppController::release_instance();
         }
 
+        /// The Dock icon clicked with no window showing: bring the main window back.
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn reopen(&self, _app: &NSApplication, visible: bool) -> bool {
+            if !visible {
+                with(|s| s.win.window.makeKeyAndOrderFront(None));
+            }
+            true
+        }
+
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
         fn last_window_closed(&self, _app: &NSApplication) -> bool {
             true

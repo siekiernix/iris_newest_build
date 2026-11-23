@@ -16,3 +16,6 @@ library-folder-taken = A folder with that name already exists.
 library-delete-title = Delete { $name }?
 library-delete-message = The machine leaves the library. Its disk images and NVRAM files stay in its folder.
 library-delete-ok = Delete
+app-quit-running-title = { $machine } is still running
+app-quit-running-body = Quitting now powers the machine off, as pulling the plug would, and IRIX can lose files that were not written to disk yet. Shut IRIX down first (System > System Shutdown, or shutdown as root), then quit.
+app-quit-running-anyway = Power Off and Quit

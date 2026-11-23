@@ -26,6 +26,8 @@ pub const RENAME_MACHINE: &str = "app.rename-machine";
 pub const DELETE_MACHINE: &str = "app.delete-machine";
 pub const NEW_FOLDER: &str = "app.new-folder";
 pub const RENAME_FOLDER: &str = "app.rename-folder";
+/// Quit while a machine runs: Cancel or power off and quit.
+pub const QUIT_RUNNING: &str = "app.quit-running";
 /// Which disk Browse Files opens, when the machine has several.
 pub const BROWSE_WHICH: &str = "app.browse-which";
 
@@ -144,6 +146,8 @@ pub struct AppController {
     pending_folder: Option<String>,
     /// Quit once the disk synchronisation the quit started has finished.
     quit_after_sync: bool,
+    /// The user chose to quit although the machine was running.
+    quit_anyway: bool,
     /// Effects produced while constructing, handed out by the first tick.
     startup: Vec<Effect>,
     /// Session events for the shell (display, serial console) since it last asked.
@@ -216,6 +220,7 @@ impl AppController {
             pending_machine: None,
             pending_folder: None,
             quit_after_sync: false,
+            quit_anyway: false,
             startup,
             session_events: Vec::new(),
         };
@@ -700,12 +705,31 @@ impl AppController {
                 }
             }
             Answer::Text { purpose: RENAME_FOLDER, text: None } => self.pending_folder = None,
+            Answer::Chose { purpose: QUIT_RUNNING, index: 1 } => {
+                self.quit_anyway = true;
+                self.request_quit(fx);
+            }
             // Cancelled prompts and answers to someone else's question.
             Answer::Text { .. } | Answer::Confirmed { .. } | Answer::Picked { .. } | Answer::Chose { .. } => {}
         }
     }
 
     fn request_quit(&mut self, fx: &mut Vec<Effect>) {
+        // A guest that is still running would lose what it has not written:
+        // ask first. A halted CPU (IRIX shut down, or the PROM idle) is safe.
+        if self.session.is_running() && !self.session.status().cpu_halted && !self.quit_anyway {
+            let machine = self.selected().unwrap_or_default().to_string();
+            fx.push(Effect::Choose(ChoiceSpec {
+                purpose: QUIT_RUNNING,
+                title: t!("app-quit-running-title", machine = machine.as_str()),
+                message: t!("app-quit-running-body"),
+                choices: vec![t!("common-cancel"), t!("app-quit-running-anyway")],
+                dismiss: 0,
+                default: Some(0),
+                destructive: vec![1],
+            }));
+            return;
+        }
         if self.session.syncing.is_some() {
             // Still folding disks: quit when that ends.
             self.quit_after_sync = true;
@@ -1190,6 +1214,18 @@ mod tests {
         assert!(about.lines.iter().any(|l| matches!(l, Line::Text(t) if t.contains("1.2.3"))));
         let lic = app.help(HelpPage::Licenses, "", "");
         assert!(lic.lines.iter().any(|l| matches!(l, Line::Code(t) if t.contains("MIT"))));
+        app.shutdown();
+    }
+
+    #[test]
+    fn power_off_and_quit_answers_the_running_question() {
+        let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
+        let root = TempRoot::new("quitrun");
+        let mut app = app_in(&root, &["alpha"]);
+        // Cancel does nothing; Power Off and Quit quits.
+        assert!(app.apply(AppAction::Answer(Answer::Chose { purpose: QUIT_RUNNING, index: 0 })).is_empty());
+        let fx = app.apply(AppAction::Answer(Answer::Chose { purpose: QUIT_RUNNING, index: 1 }));
+        assert_eq!(fx.last(), Some(&Effect::Quit));
         app.shutdown();
     }
 
