@@ -323,3 +323,28 @@ pub fn dump_devices(mtm: MainThreadMarker) {
     }
     walk(&menu, 0);
 }
+
+/// The toolbar's Discs menu: each CD-ROM's entries (insert, change, eject,
+/// mount), under the pointer. Disks are left to the Devices menu.
+pub fn discs(mtm: MainThreadMarker, groups: &[iris_gui_core::controller::commands::MenuGroup]) {
+    use iris_gui_core::controller::icons::Icon;
+    let keys = KeyMap::default();
+    let menu = NSMenu::initWithTitle(mtm.alloc(), &ns(&t!("tb-disc")));
+    for g in groups.iter().filter(|g| g.icon == Icon::CdRom) {
+        let head = system(mtm, &g.title, sel!(act:), "");
+        // SAFETY: a heading with no action, shown disabled.
+        unsafe { head.setAction(None) };
+        head.setEnabled(false);
+        menu.addItem(&head);
+        for e in &g.entries {
+            let it = ours(mtm, &keys, &e.label, &e.id);
+            it.setIndentationLevel(1);
+            if let Some(tip) = &e.tooltip {
+                it.setToolTip(Some(&ns(tip)));
+            }
+            menu.addItem(&it);
+        }
+    }
+    let at = objc2_app_kit::NSEvent::mouseLocation();
+    menu.popUpMenuPositioningItem_atLocation_inView(None, at, None);
+}

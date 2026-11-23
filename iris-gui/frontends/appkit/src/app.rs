@@ -486,6 +486,13 @@ pub fn setting(id: String, value: iris_gui_core::controller::settings::Value) {
     if id.starts_with("panel.") {
         return panel_control(&id, value);
     }
+    if id == crate::summary::TAB {
+        if let iris_gui_core::controller::settings::Value::Index(i) = value {
+            with(|s| s.win.set_summary_tab(i));
+            refresh();
+        }
+        return;
+    }
     if id.starts_with("prefs.") {
         if let Some(a) = iris_gui_core::controller::preferences::action_for(&id, value) {
             dispatch(a);
@@ -774,6 +781,10 @@ fn shell_command(c: ShellCommand) {
         ShellCommand::About => show_help(iris_gui_core::controller::help::HelpPage::About),
         ShellCommand::Settings => open_settings(None),
         ShellCommand::NewMachine => open_new_machine(),
+        ShellCommand::DiscMenu => {
+            let groups = with(|s| s.app.disk_menu()).unwrap_or_default();
+            crate::menu::discs(mtm(), &groups);
+        }
         ShellCommand::SavedStates => {
             let states = with(|s| s.app.saved_states()).unwrap_or_default();
             crate::menu::saved_states(mtm(), &states);

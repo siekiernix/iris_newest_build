@@ -118,6 +118,24 @@ pub struct SavedState {
     /// Seconds since the Unix epoch the state was written.
     pub saved: Option<u64>,
     pub bytes: u64,
+    /// The screen when it was saved, when one was kept.
+    pub picture: Option<Picture>,
+}
+
+/// A picture file and when it was written, so a view reloads it when it changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Picture {
+    pub path: PathBuf,
+    pub modified: u64,
+}
+
+impl Picture {
+    /// `path` when it is a file.
+    pub fn at(path: PathBuf) -> Option<Self> {
+        let m = std::fs::metadata(&path).ok().filter(|m| m.is_file())?;
+        let modified = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
+        Some(Self { path, modified })
+    }
 }
 
 /// How a status-bar light shows.
@@ -367,7 +385,8 @@ impl SessionController {
         let Ok(rd) = std::fs::read_dir(dir.join("saves")) else { return Vec::new() };
         let mut out: Vec<SavedState> = rd
             .flatten()
-            .filter(|e| e.path().is_dir())
+            // Hidden folders (`.cas`, the store snapshots share) are not states.
+            .filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.'))
             .map(|e| {
                 let path = e.path();
                 let saved = std::fs::metadata(path.join("snapshot.toml"))
@@ -376,7 +395,8 @@ impl SessionController {
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs());
-                SavedState { name: e.file_name().to_string_lossy().into_owned(), saved, bytes: dir_size(&path) }
+                let picture = Picture::at(path.join(crate::model::handle::STATE_SCREEN));
+                SavedState { name: e.file_name().to_string_lossy().into_owned(), saved, bytes: dir_size(&path), picture }
             })
             .collect();
         out.sort_by(|a, b| b.saved.cmp(&a.saved).then(a.name.cmp(&b.name)));

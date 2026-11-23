@@ -94,6 +94,10 @@ struct Pool {
 
 struct FrameSinkInner {
     pool: Mutex<Pool>,
+    /// The whole picture, kept up to date from every band published (even one
+    /// the GUI never takes): for a picture of the screen, which a band cannot
+    /// give. Width, height, RGBA.
+    whole: Mutex<(usize, usize, Vec<u8>)>,
     seq: AtomicU64,
     /// What to wake when a frame lands. Installed once the shell exists (the
     /// sink outlives it, being created with the worker thread).
@@ -115,6 +119,7 @@ impl FrameSink {
         Self {
             inner: Arc::new(FrameSinkInner {
                 pool: Mutex::new(Pool::default()),
+                whole: Mutex::new((0, 0, Vec::new())),
                 seq: AtomicU64::new(0),
                 wake: Mutex::new(None),
             }),
@@ -161,7 +166,33 @@ impl FrameSink {
         // old run's picture, and there is no reason to carry megabytes of it
         // across a Stop/Start boundary.
         drop(stale);
+        *self.inner.whole.lock() = (0, 0, Vec::new());
         self.inner.seq.store(0, Ordering::Release);
+    }
+
+    /// The whole current picture (width, height, RGBA), `None` before the
+    /// first frame. A copy: for pictures of the screen, not for drawing.
+    pub fn whole(&self) -> Option<(usize, usize, Vec<u8>)> {
+        let w = self.inner.whole.lock();
+        (w.0 > 0 && w.1 > 0).then(|| (w.0, w.1, w.2.clone()))
+    }
+
+    /// Copy `frame`'s rows into the whole picture.
+    fn mirror(&self, frame: &Frame) {
+        let (fw, fh) = (frame.width, frame.height);
+        if fw == 0 || fh == 0 || frame.rgba.len() < fw * fh * 4 {
+            return;
+        }
+        let mut w = self.inner.whole.lock();
+        let full = frame.dirty_h == 0 || frame.dirty_h as usize >= fh || (w.0, w.1) != (fw, fh);
+        if full {
+            *w = (fw, fh, frame.rgba[..fw * fh * 4].to_vec());
+            return;
+        }
+        let row = fw * 4;
+        let y0 = (frame.dirty_y as usize).min(fh);
+        let y1 = (frame.dirty_y as usize + frame.dirty_h as usize).min(fh);
+        w.2[y0 * row..y1 * row].copy_from_slice(&frame.rgba[y0 * row..y1 * row]);
     }
 
     /// A buffer to fill.
@@ -177,6 +208,7 @@ impl FrameSink {
     /// published, so the caller knows whether to move its damage baseline.
     fn publish(&self, frame: Frame) -> bool {
         let seq = frame.seq;
+        self.mirror(&frame);
         {
             let mut pool = self.inner.pool.lock();
             if pool.published.is_some() {
@@ -563,6 +595,21 @@ mod tests {
             }
         }
         first.map(|f| (f as u32, (last - f + 1) as u32))
+    }
+
+    #[test]
+    fn the_whole_picture_follows_every_band_even_untaken_ones() {
+        let sink = FrameSink::new();
+        assert!(sink.whole().is_none());
+        let frame = |fill: u8, y: u32, h: u32| Frame { width: 2, height: 3, rgba: vec![fill; 24], seq: 1, dirty_y: y, dirty_h: h };
+        assert!(sink.publish(frame(1, 0, 0)), "full frame");
+        // Not taken: the next is dropped for the GUI, yet its band still counts.
+        assert!(!sink.publish(frame(9, 1, 1)));
+        let (w, h, px) = sink.whole().unwrap();
+        assert_eq!((w, h), (2, 3));
+        assert_eq!(px, [vec![1u8; 8], vec![9u8; 8], vec![1u8; 8]].concat());
+        sink.reset();
+        assert!(sink.whole().is_none());
     }
 
     #[test]

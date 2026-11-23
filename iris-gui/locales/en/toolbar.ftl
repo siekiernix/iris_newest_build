@@ -17,3 +17,11 @@ tb-settings = Machine settings
 tb-no-cdrom = This machine has no CD-ROM drive.
 browser-unavailable-running = Disks can be browsed while the machine is off.
 
+tb-new-machine = New machine
+tb-duplicate = Duplicate this machine
+tb-delete = Delete this machine
+tb-disc = Discs
+tb-capture = Capture the mouse and keyboard
+tb-start-machine = Start { $name }
+tb-already-running = This machine is running.
+tb-one-at-a-time = Another machine is running. One machine runs at a time.

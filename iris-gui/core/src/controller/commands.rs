@@ -48,6 +48,8 @@ pub enum ShellCommand {
     Settings,
     /// Show the saved-states list.
     SavedStates,
+    /// Pop up the disc menu (insert, change, eject) for the machine's CD-ROMs.
+    DiscMenu,
     NewMachine,
     About,
     AppSettings,
@@ -80,6 +82,11 @@ pub fn tip(id: &str, keys: &KeyMap) -> Option<Tip> {
         tb::FULL_SCREEN => (Icon::FullScreen, t!("tb-full-screen"), Some(Command::FullScreen)),
         tb::SERIAL_CONSOLE => (Icon::SerialConsole, t!("tb-serial-console"), Some(Command::SerialConsole)),
         tb::MACHINE_SETTINGS => (Icon::MachineSettings, t!("tb-settings"), Some(Command::MachineSettings)),
+        tb::NEW_MACHINE => (Icon::NewMachine, t!("tb-new-machine"), Some(Command::NewMachine)),
+        tb::DUPLICATE => (Icon::Duplicate, t!("tb-duplicate"), None),
+        tb::DELETE => (Icon::Delete, t!("tb-delete"), None),
+        tb::DISC => (Icon::InsertDisc, t!("tb-disc"), None),
+        tb::CAPTURE => (Icon::InputCapture, t!("tb-capture"), Some(Command::CaptureInput)),
         _ => return None,
     };
     let mut tip = Tip::new(icon, text);
@@ -144,6 +151,17 @@ fn item_session(id: &str) -> Option<SessionAction> {
     key(item::DISCARD_COW).map(|key| SessionAction::RollBack { key })
 }
 
+/// Toolbar ids that are a menu item's command under another name.
+fn alias(id: &str) -> Option<&'static str> {
+    Some(match id {
+        tb::NEW_MACHINE => menu::NEW_MACHINE,
+        tb::DUPLICATE => menu::DUPLICATE,
+        tb::DELETE => menu::DELETE,
+        tb::CAPTURE => menu::CAPTURE,
+        _ => return None,
+    })
+}
+
 /// One entry of a shell-drawn menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuEntry {
@@ -163,6 +181,41 @@ pub struct MenuGroup {
 }
 
 impl AppController {
+    /// The toolbar's items for what the machine is doing, left to right;
+    /// [`tb::GAP`] is the flexible space before the right-hand group. A
+    /// stopped machine gets what you do to a machine (start it, change it,
+    /// copy it); a running one what you do while it runs. ▶ only ever starts,
+    /// ⏻ only ever asks IRIX to shut down.
+    pub fn toolbar_layout(&self) -> Vec<&'static str> {
+        let s = self.session();
+        if s.is_running() || s.run_state() == super::session::RunState::Starting {
+            vec![
+                tb::SHOW_LIBRARY,
+                tb::SHUT_DOWN_GUEST,
+                tb::RESTART,
+                tb::POWER_OFF,
+                tb::GAP,
+                tb::SAVE_STATE,
+                tb::SCREENSHOT,
+                tb::DISC,
+                tb::CAPTURE,
+                tb::FULL_SCREEN,
+                tb::DETACH_DISPLAY,
+                tb::SERIAL_CONSOLE,
+            ]
+        } else {
+            vec![
+                tb::SHOW_LIBRARY,
+                tb::NEW_MACHINE,
+                tb::GAP,
+                tb::DUPLICATE,
+                tb::DELETE,
+                tb::MACHINE_SETTINGS,
+                tb::POWER_ON,
+            ]
+        }
+    }
+
     /// The Disks menu: one group per disk and CD-ROM of the selected
     /// machine, each with what can be done to it now.
     pub fn disk_menu(&self) -> Vec<MenuGroup> {
@@ -211,6 +264,20 @@ impl AppController {
         use super::ids::item;
         if let Some(c) = self.light_command(id) {
             return self.command_enabled(&c);
+        }
+        if let Some(a) = alias(id) {
+            return self.command_enabled(a);
+        }
+        if id == tb::DISC {
+            return self.command_enabled(tb::INSERT_DISC);
+        }
+        if let Some(name) = id.strip_prefix(item::START_MACHINE) {
+            // The running machine is started already; another waits for it to stop.
+            return match (self.session().is_running(), self.selected() == Some(name)) {
+                (true, true) => Enabled::No(t!("tb-already-running")),
+                (true, false) => Enabled::No(t!("tb-one-at-a-time")),
+                (false, _) => Enabled::Yes,
+            };
         }
         if id.starts_with(item::BROWSE_DISK) {
             return self.command_enabled(tb::BROWSE_FILES);
@@ -283,6 +350,9 @@ impl AppController {
         if let Some(c) = self.light_command(id) {
             return self.command(&c);
         }
+        if let Some(a) = alias(id) {
+            return self.command(a);
+        }
         let mut r = Routed::default();
         if let Enabled::No(why) = self.command_enabled(id) {
             r.effects.push(Effect::Toast(why));
@@ -310,6 +380,22 @@ impl AppController {
         }
         if let Some(key) = id.strip_prefix(item::BROWSE_DISK).and_then(|k| k.parse().ok()) {
             r.effects = self.apply(AppAction::OpenBrowser { key });
+            return r;
+        }
+        if let Some(name) = id.strip_prefix(item::START_MACHINE) {
+            // Select it (a no-op when it is already selected), then power on.
+            let mut fx = Vec::new();
+            if self.selected() != Some(name) {
+                fx = self.apply(AppAction::Select(name.to_string()));
+            }
+            if self.selected() == Some(name) {
+                fx.extend(self.apply(AppAction::Session(SessionAction::PowerOn)));
+            }
+            r.effects = fx;
+            return r;
+        }
+        if id == tb::DISC {
+            r.shell = Some(ShellCommand::DiscMenu);
             return r;
         }
         if let Some(a) = item_session(id) {

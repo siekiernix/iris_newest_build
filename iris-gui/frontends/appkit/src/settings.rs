@@ -111,7 +111,9 @@ fn text_field(mtm: MainThreadMarker, id: &str, value: &str, placeholder: &str, w
 pub fn value_of(sender: &AnyObject) -> Option<(String, Value)> {
     let v = sender.downcast_ref::<NSView>()?;
     let id = objc2_app_kit::NSUserInterfaceItemIdentification::identifier(v)?.to_string();
-    let value = if let Some(p) = sender.downcast_ref::<NSPopUpButton>() {
+    let value = if let Some(s) = sender.downcast_ref::<objc2_app_kit::NSSegmentedControl>() {
+        Value::Index(s.selectedSegment().max(0) as usize)
+    } else if let Some(p) = sender.downcast_ref::<NSPopUpButton>() {
         Value::Index(p.indexOfSelectedItem().max(0) as usize)
     } else if let Some(b) = sender.downcast_ref::<NSButton>() {
         Value::Bool(b.state() == NSControlStateValueOn)

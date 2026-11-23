@@ -49,6 +49,7 @@ pub fn symbol_name(icon: Icon) -> &'static str {
         Icon::Up => "arrow.up",
         Icon::Refresh => "arrow.clockwise",
         Icon::Cancel => "xmark",
+        Icon::Duplicate => "plus.square.on.square",
     }
 }
 

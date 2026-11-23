@@ -313,6 +313,15 @@ the camera test and Preferences, with SF Symbols and the system's light and
 dark appearance. The machine settings include Video In (the Indy's camera)
 and Performance (thread pinning, the JIT, the VNC server).
 
+The toolbar follows the machine: a stopped machine offers New, Duplicate,
+Delete, Settings and Start; a running one Shut Down (asks IRIX to shut down
+cleanly), Restart and Power Off on the left, and Save State, Screenshot,
+Discs, Capture, Full Screen, Detach and the serial console on the right. A
+stopped machine's page shows its last screen with a large Start button, then
+**Details** (the hardware) or **Saved States**: a timeline of the machine's
+saved states, each with the screen it was saved at. Each library row has its
+own Start button.
+
 It also has a **disk browser**: the folder button next to a disk on the
 summary page, Browse Files in the toolbar, or a click on a disk's status
 light opens the disk of a stopped machine. It shows the partitions and their

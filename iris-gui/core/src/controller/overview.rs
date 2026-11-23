@@ -35,6 +35,8 @@ pub struct Overview {
     pub warnings: Vec<(Severity, String)>,
     pub states: Vec<SavedState>,
     pub rows: Vec<HardwareRow>,
+    /// The machine's last screen, from when it last stopped.
+    pub preview: Option<super::session::Picture>,
 }
 
 impl AppController {
@@ -192,6 +194,7 @@ impl AppController {
             warnings,
             states: self.saved_states(),
             rows,
+            preview: self.machine_dir().and_then(|d| super::session::Picture::at(d.join(crate::model::handle::LAST_SCREEN))),
         })
     }
 }

@@ -130,6 +130,9 @@ fn cell(mtm: MainThreadMarker, item: &Item) -> Retained<NSView> {
             text.setSpacing(1.0);
             let mut views: Vec<Retained<NSView>> =
                 vec![Retained::into_super(Retained::into_super(image)), Retained::into_super(text)];
+            let spacer = NSView::new(mtm);
+            spacer.setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
+            views.push(spacer);
             if let Some(dot) = &m.dot {
                 let d: Retained<NSTextField> = label(mtm, "\u{25CF}");
                 let (color, tip) = match dot {
@@ -139,6 +142,22 @@ fn cell(mtm: MainThreadMarker, item: &Item) -> Retained<NSView> {
                 d.setTextColor(Some(&color));
                 d.setToolTip(Some(&ns(&tip)));
                 views.push(Retained::into_super(Retained::into_super(d)));
+            }
+            // Its own Start, as UTM has; a running machine shows its dot instead.
+            if !matches!(m.dot, Some(RowDot::Running)) {
+                let id = iris_gui_core::controller::ids::item::id(iris_gui_core::controller::ids::item::START_MACHINE, &m.name);
+                let tip = t!("tb-start-machine", name = m.name.as_str());
+                let b = crate::ui::button(mtm, "", &id);
+                b.setBordered(false);
+                if let Some(img) = glyphs::symbol("play.circle.fill", &tip) {
+                    b.setImage(Some(&img));
+                    b.setSymbolConfiguration(Some(&objc2_app_kit::NSImageSymbolConfiguration::configurationWithPointSize_weight(20.0, 0.0)));
+                } else {
+                    b.setTitle(&ns("\u{25B6}"));
+                }
+                b.setContentTintColor(Some(&NSColor::labelColor()));
+                b.setToolTip(Some(&ns(&tip)));
+                views.push(Retained::into_super(Retained::into_super(b)));
             }
             let row = NSStackView::stackViewWithViews(&objc2_foundation::NSArray::from_retained_slice(&views), mtm);
             row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);

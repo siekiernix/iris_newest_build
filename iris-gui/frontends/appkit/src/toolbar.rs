@@ -13,11 +13,11 @@ use iris_gui_core::controller::ids::toolbar as tb;
 use crate::glyphs;
 use crate::ui::{ns, target};
 
-const FLEX: &str = "flex";
-
-/// Left to right; `FLEX` is the flexible space before the right-hand group.
+/// Every item the toolbar can show; the controller picks which, by state
+/// (`AppController::toolbar_layout`).
 const ITEMS: &[&str] = &[
     tb::SHOW_LIBRARY,
+    tb::NEW_MACHINE,
     tb::POWER_ON,
     tb::SHUT_DOWN_GUEST,
     tb::POWER_OFF,
@@ -26,13 +26,36 @@ const ITEMS: &[&str] = &[
     tb::SAVED_STATES,
     tb::SCREENSHOT,
     tb::INSERT_DISC,
+    tb::DISC,
+    tb::CAPTURE,
     tb::BROWSE_FILES,
-    FLEX,
+    tb::DUPLICATE,
+    tb::DELETE,
     tb::DETACH_DISPLAY,
     tb::FULL_SCREEN,
     tb::SERIAL_CONSOLE,
     tb::MACHINE_SETTINGS,
+    tb::GAP,
 ];
+
+fn identifier(id: &str) -> Retained<NSString> {
+    if id == tb::GAP {
+        // SAFETY: a constant AppKit defines.
+        unsafe { NSToolbarFlexibleSpaceItemIdentifier }.copy()
+    } else {
+        ns(id)
+    }
+}
+
+/// Show `layout` (ids left to right), replacing what the toolbar shows.
+pub fn set_layout(toolbar: &NSToolbar, layout: &[&str]) {
+    for i in (0..toolbar.items().len()).rev() {
+        toolbar.removeItemAtIndex(i as isize);
+    }
+    for (i, id) in layout.iter().enumerate() {
+        toolbar.insertItemWithItemIdentifier_atIndex(&identifier(id), i as isize);
+    }
+}
 
 fn make_item(mtm: MainThreadMarker, id: &NSString) -> Option<Retained<NSToolbarItem>> {
     let key = id.to_string();
@@ -71,7 +94,7 @@ define_class!(
 
         #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
         fn defaults(&self, _toolbar: &NSToolbar) -> Retained<NSArray<NSString>> {
-            all_ids()
+            default_ids()
         }
 
         #[unsafe(method_id(toolbarAllowedItemIdentifiers:))]
@@ -82,17 +105,14 @@ define_class!(
 );
 
 fn all_ids() -> Retained<NSArray<NSString>> {
-    let v: Vec<_> = ITEMS
-        .iter()
-        .map(|id| {
-            if *id == FLEX {
-                // SAFETY: a constant AppKit defines.
-                unsafe { NSToolbarFlexibleSpaceItemIdentifier }.copy()
-            } else {
-                ns(id)
-            }
-        })
-        .collect();
+    let v: Vec<_> = ITEMS.iter().map(|id| identifier(id)).collect();
+    NSArray::from_retained_slice(&v)
+}
+
+/// What the toolbar starts with: the stopped layout (the window sets the
+/// real one on its first refresh).
+fn default_ids() -> Retained<NSArray<NSString>> {
+    let v: Vec<_> = [tb::SHOW_LIBRARY, tb::NEW_MACHINE, tb::GAP, tb::POWER_ON].iter().map(|id| identifier(id)).collect();
     NSArray::from_retained_slice(&v)
 }
 

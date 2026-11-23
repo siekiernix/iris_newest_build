@@ -685,6 +685,8 @@ fn worker_loop(
             }
             Ok(Cmd::Stop) => {
                 if let Some(m) = machine.take() {
+                    // The last screen, for the stopped machine's preview.
+                    save_picture(&frame_sink, std::path::Path::new(LAST_SCREEN));
                     *ps2_slot.lock() = None;
                     *host_slot.lock() = None;
                     meter = None;
@@ -709,6 +711,7 @@ fn worker_loop(
                 // machine is dropped afterwards, exactly like a Stop.
                 let mut synced = 0usize;
                 if let Some(mut m) = machine.take() {
+                    save_picture(&frame_sink, std::path::Path::new(LAST_SCREEN));
                     *ps2_slot.lock() = None;
                     *host_slot.lock() = None;
                     meter = None;
@@ -813,6 +816,9 @@ fn worker_loop(
                 // it returns, carry on as the monitor's `machine-start` does
                 // (`start` would also start a second monitor server), and
                 // only if the machine was running before.
+                // The screen as it is now, before saving stops the machine.
+                let shot = std::env::temp_dir().join(format!("iris-state-{}.png", std::process::id()));
+                let have_shot = save_picture(&frame_sink, &shot);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let was_running = m.cpu_is_running();
                     let r = m.save_snapshot(&name);
@@ -824,7 +830,15 @@ fn worker_loop(
                     r
                 }));
                 match result {
-                    Ok(Ok(())) => { let _ = evt_tx.send(Evt::StateSaved(name)); }
+                    Ok(Ok(())) => {
+                        if have_shot {
+                            let to = std::path::Path::new("saves").join(&name).join(STATE_SCREEN);
+                            if std::fs::copy(&shot, &to).is_err() {
+                                log::warn!("could not keep the saved state's picture at {}", to.display());
+                            }
+                        }
+                        let _ = evt_tx.send(Evt::StateSaved(name));
+                    }
                     Ok(Err(e)) => { let _ = evt_tx.send(Evt::Error(t!("emu-save-failed", name = &name, error = e.to_string()))); }
                     Err(p) => { let _ = evt_tx.send(Evt::Error(t!("emu-save-crashed", error = panic_msg(&p)))); }
                 }
@@ -984,6 +998,39 @@ fn stop_machine_timed(m: Box<dyn Workstation>) -> Result<(), String> {
         Ok(Err(msg)) => Err(t!("emu-stop-failed", error = msg)),
         Err(_) => Err(t!("emu-stop-timeout")),
     }
+}
+
+/// The picture beside a stopped machine (its summary's preview) and inside
+/// each saved state (`saves/NAME/`), relative to the machine folder.
+pub const LAST_SCREEN: &str = "last-screen.png";
+pub const STATE_SCREEN: &str = "screen.png";
+
+/// Write the screen as the app last received it (head 0), scaled down to at
+/// most 640 pixels wide, as a PNG at `path`. Best effort: `false` when there
+/// is no picture yet. The board's own screen buffer is not kept current while
+/// the app draws the frames, so this reads the frame sink's whole picture.
+fn save_picture(sink: &FrameSink, path: &std::path::Path) -> bool {
+    let Some((w, h, src)) = sink.whole() else { return false };
+    // Whole steps only: every output pixel averages a block of the source.
+    let step = w.div_ceil(640).max(1);
+    let (ow, oh) = (w / step, h / step);
+    let mut rgba = Vec::with_capacity(ow * oh * 4);
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let mut sum = [0u32; 3];
+            for dy in 0..step {
+                for dx in 0..step {
+                    let i = ((oy * step + dy) * w + ox * step + dx) * 4;
+                    sum[0] += u32::from(src[i]);
+                    sum[1] += u32::from(src[i + 1]);
+                    sum[2] += u32::from(src[i + 2]);
+                }
+            }
+            let n = (step * step) as u32;
+            rgba.extend_from_slice(&[(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8, 0xFF]);
+        }
+    }
+    write_png(path, ow as u32, oh as u32, &rgba).is_ok()
 }
 
 fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {

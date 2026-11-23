@@ -25,11 +25,13 @@ ov-forwards = { $count ->
 }
 ov-saved-states = Saved states
 ov-no-states = No saved states yet.
-ov-power-on = Power On
-ov-edit-settings = Edit Settings
 ov-browse = Browse files
-ov-hardware = Hardware
 ov-no-machine = No machine yet. Choose File > New Machine.
 ov-restore = Restore
 ov-rename = Rename
 ov-delete = Delete
+ov-details = Details
+ov-current-state = Current state
+ov-not-running = Not running
+ov-save-while-running = Start the machine to save its state.
+ov-saved-at = Saved { $when }

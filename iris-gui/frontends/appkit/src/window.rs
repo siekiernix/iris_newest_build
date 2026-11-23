@@ -37,6 +37,10 @@ pub struct MainWindow {
     last_lights: Vec<DeviceLight>,
     toast: Retained<NSTextField>,
     _toolbar_delegate: Retained<toolbar::Delegate>,
+    toolbar: Retained<objc2_app_kit::NSToolbar>,
+    toolbar_layout: Vec<&'static str>,
+    /// The machine page's tab: 0 Details, 1 Saved States.
+    pub summary_tab: usize,
     last: Option<Option<Overview>>,
     library_hidden: bool,
 }
@@ -136,6 +140,9 @@ impl MainWindow {
             last_lights: Vec::new(),
             toast,
             _toolbar_delegate: delegate,
+            toolbar: tb.clone(),
+            toolbar_layout: Vec::new(),
+            summary_tab: 0,
             last: None,
             library_hidden: false,
         }
@@ -199,6 +206,14 @@ impl MainWindow {
         self.toast.setStringValue(&ns(text));
     }
 
+    /// Show the machine page's other tab on the next refresh.
+    pub fn set_summary_tab(&mut self, tab: usize) {
+        if self.summary_tab != tab {
+            self.summary_tab = tab;
+            self.last = None;
+        }
+    }
+
     /// Bring every view in line with the controller. Views are set only when
     /// their value changed.
     pub fn refresh(&mut self, mtm: MainThreadMarker, app: &AppController) {
@@ -208,9 +223,22 @@ impl MainWindow {
         if self.window.title().to_string() != title {
             self.window.setTitle(&ns(&title));
         }
+        // The model under the name, as macOS 11+ windows can show it.
+        if crate::ui::has_symbols() {
+            let sub = app.overview().map(|o| o.spec).unwrap_or_default();
+            if self.window.subtitle().to_string() != sub {
+                self.window.setSubtitle(&ns(&sub));
+            }
+        }
+        // The toolbar follows the machine's state.
+        let layout = app.toolbar_layout();
+        if layout != self.toolbar_layout {
+            toolbar::set_layout(&self.toolbar, &layout);
+            self.toolbar_layout = layout;
+        }
         let o = app.overview();
         if self.last.as_ref() != Some(&o) {
-            let page = crate::summary::build(mtm, o.as_ref());
+            let page = crate::summary::build(mtm, o.as_ref(), self.summary_tab);
             // A flipped document view holds the page at its top; the page
             // takes the pane's width and its own height.
             let doc = crate::ui::flipped(mtm);

@@ -19,6 +19,14 @@ pub mod toolbar {
     pub const FULL_SCREEN: &str = "toolbar.full-screen";
     pub const SERIAL_CONSOLE: &str = "toolbar.serial-console";
     pub const MACHINE_SETTINGS: &str = "toolbar.machine-settings";
+    pub const NEW_MACHINE: &str = "toolbar.new-machine";
+    pub const DUPLICATE: &str = "toolbar.duplicate";
+    pub const DELETE: &str = "toolbar.delete";
+    /// The disc menu: insert, change or eject, for each CD-ROM.
+    pub const DISC: &str = "toolbar.disc";
+    pub const CAPTURE: &str = "toolbar.capture";
+    /// Not an item: the flexible space between the left and right groups.
+    pub const GAP: &str = "toolbar.gap";
 }
 
 /// The machine library on the left.
@@ -65,6 +73,8 @@ pub mod item {
     pub const BROWSE_DISK: &str = "browse:";
     /// Followed by the CD-ROM's `[scsi.KEY]` key.
     pub const INSERT_DISC: &str = "disc.insert:";
+    /// Followed by a machine's name: select it and power it on.
+    pub const START_MACHINE: &str = "machine.start:";
     /// Each followed by the CD-ROM's key.
     pub const EJECT_DISC: &str = "disc.eject:";
     pub const MOUNT_DISC: &str = "disc.mount:";
