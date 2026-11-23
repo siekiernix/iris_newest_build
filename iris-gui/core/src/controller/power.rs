@@ -311,11 +311,7 @@ impl AppController {
             let mut message = t!("modal-missing-body");
             for m in &missing {
                 message.push('\n');
-                message.push_str(&if m.cdrom {
-                    t!("modal-missing-cdrom", id = &m.name, path = &m.path)
-                } else {
-                    t!("modal-missing-disk", id = &m.name, path = &m.path)
-                });
+                message.push_str(&super::overview::missing_line(m));
             }
             if cfg!(feature = "appstore") {
                 message.push_str("\n\n");

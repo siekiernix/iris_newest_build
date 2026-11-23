@@ -39,6 +39,18 @@ pub struct Overview {
     pub preview: Option<super::session::Picture>,
 }
 
+/// One line for a missing image: "SCSI 1 (disk): disks/a.raw", or that no
+/// image was chosen when the path is empty.
+pub(crate) fn missing_line(m: &summary::MissingDisk) -> String {
+    let id = m.name.as_str();
+    match (m.cdrom, m.path.is_empty()) {
+        (true, false) => t!("modal-missing-cdrom", id = id, path = m.path.as_str()),
+        (false, false) => t!("modal-missing-disk", id = id, path = m.path.as_str()),
+        (true, true) => t!("modal-missing-cdrom-none", id = id),
+        (false, true) => t!("modal-missing-disk-none", id = id),
+    }
+}
+
 impl AppController {
     /// The summary of the selected machine, `None` with no machine.
     pub fn overview(&self) -> Option<Overview> {
@@ -170,14 +182,7 @@ impl AppController {
         });
         let mut warnings = Vec::new();
         for m in &missing {
-            warnings.push((
-                Severity::Warning,
-                if m.cdrom {
-                    t!("modal-missing-cdrom", id = m.name.as_str(), path = m.path.as_str())
-                } else {
-                    t!("modal-missing-disk", id = m.name.as_str(), path = m.path.as_str())
-                },
-            ));
+            warnings.push((Severity::Warning, missing_line(m)));
         }
         if let Err(e) = cfg.validate() {
             warnings.push((Severity::Error, t!("toast-invalid-config", error = e.to_string())));
@@ -196,5 +201,20 @@ impl AppController {
             rows,
             preview: self.machine_dir().and_then(|d| super::session::Picture::at(d.join(crate::model::handle::LAST_SCREEN))),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_disk_with_no_image_says_so() {
+        let m = |path: &str, cdrom| summary::MissingDisk { key: 3, name: "3".into(), path: path.into(), cdrom };
+        assert!(missing_line(&m("disks/a.raw", false)).contains("disks/a.raw"));
+        for cdrom in [false, true] {
+            let line = missing_line(&m("", cdrom));
+            assert!(!line.trim_end().ends_with(':'), "{line}");
+        }
     }
 }
