@@ -9,7 +9,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSColor, NSControlTextEditingDelegate, NSFont, NSImageView, NSLayoutConstraintOrientation, NSScrollView, NSStackView, NSStackViewDistribution,
+    NSColor, NSControlTextEditingDelegate, NSFont, NSMenu, NSMenuDelegate, NSMenuItem, NSImageView, NSLayoutConstraintOrientation, NSScrollView, NSStackView, NSStackViewDistribution,
     NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewSelectionHighlightStyle,
     NSTableViewStyle, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
@@ -31,6 +31,8 @@ pub struct State {
     items: RefCell<Vec<Item>>,
     /// Set while the shell sets the selection itself, so it is not reported back.
     syncing: Cell<bool>,
+    /// The table, for the row a right-click landed on.
+    table: RefCell<Option<Retained<NSTableView>>>,
 }
 
 define_class!(
@@ -50,6 +52,32 @@ define_class!(
     }
 
     unsafe impl NSControlTextEditingDelegate for Source {}
+
+    unsafe impl NSMenuDelegate for Source {
+        /// A right-click on a machine: its menu, from `AppController::machine_menu`.
+        #[unsafe(method(menuNeedsUpdate:))]
+        fn menu_needs_update(&self, menu: &NSMenu) {
+            menu.removeAllItems();
+            let Some(table) = self.ivars().table.borrow().clone() else { return };
+            let row = table.clickedRow();
+            if row < 0 {
+                return;
+            }
+            let name = match self.ivars().items.borrow().get(row as usize) {
+                Some(Item::Machine(m)) => m.name.clone(),
+                _ => return,
+            };
+            let Some(sections) = crate::app::machine_menu(&name) else { return };
+            for (i, section) in sections.iter().enumerate() {
+                if i > 0 {
+                    menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+                }
+                for e in section {
+                    menu.addItem(&crate::menu::command_item(self.mtm(), &e.label, &e.id));
+                }
+            }
+        }
+    }
 
     unsafe impl NSTableViewDelegate for Source {
         #[unsafe(method_id(tableView:viewForTableColumn:row:))]
@@ -204,6 +232,12 @@ impl Library {
             table.setDelegate(Some(ProtocolObject::from_ref(&*source)));
         }
         set_id(&table, ids::library::LIST);
+        // Right-click a machine for what you can do with it.
+        let menu = NSMenu::new(mtm);
+        menu.setDelegate(Some(ProtocolObject::from_ref(&*source)));
+        // SAFETY: the menu is kept by the table; its delegate by `Library`.
+        unsafe { table.setMenu(Some(&menu)) };
+        *source.ivars().table.borrow_mut() = Some(table.clone());
         let scroll = NSScrollView::initWithFrame(mtm.alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(240.0, 400.0)));
         table.setAutoresizingMask(objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable);
         scroll.setDocumentView(Some(&table));

@@ -321,7 +321,11 @@ Discs, Capture, Full Screen, Detach and the serial console on the right. A
 stopped machine's page shows its last screen with a large Start button, then
 **Details** (the hardware) or **Saved States**: a timeline of the machine's
 saved states, each with the screen it was saved at. Each library row has its
-own Start button.
+own Start button, and a right-click on a row offers Start, Settings, Browse
+Files, Duplicate, Rename, Delete and Show in Finder. **Edit Settings…** under
+the hardware list opens the machine's settings. The disc button only appears
+for a machine with a CD-ROM drive. While a machine stops, the status bar says
+so, and says when it is applying disk changes to a compressed CHD.
 
 It also has a **disk browser**: the Browse Files button next to a disk on the
 summary page, Browse Files in the toolbar, or a click on a disk's status
@@ -559,9 +563,10 @@ Stops…**), with the machine stopped:
 - **Uncompressed** never rebuilds: the CHD is written in place. The file grows
   to the space the disk uses (2.9 GB for that 4.3 GB disk), up to its full size.
 
-IRIS Preview asks once, when such a disk is attached in Settings or New
-Machine, and the machine page keeps pointing it out until it is converted or
-kept with **Keep As Is**. A kept disk is remembered (`convert_declined` in
+IRIS Preview asks when such a disk is attached in Settings or New Machine,
+and again before the machine starts (Start Without Converting keeps it as it
+is; choosing a format converts it and then starts the machine). The machine
+page keeps pointing it out until it is converted or kept with **Keep As Is**. A kept disk is remembered (`convert_declined` in
 `gui.json`) and never suggested again; the Devices menu still converts it.
 
 The file keeps its name, so the machine's settings do not change. Pending

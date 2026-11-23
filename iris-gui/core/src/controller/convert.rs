@@ -1,8 +1,9 @@
 //! Converting a machine's compressed CHD disk so that stopping it is quick
 //! (`model::chd_convert`). A disk compressed with lzma or zstd, whose rebuild
-//! after every stop takes minutes, is asked about once when it is attached
-//! (Settings, New Machine) and pointed out on the machine page until the user
-//! converts it or keeps it as it is (`GuiSettings::convert_declined`). The
+//! after every stop takes minutes, is asked about when it is attached
+//! (Settings, New Machine) and before the machine starts, and pointed out on
+//! the machine page, until the user converts it or keeps it as it is
+//! (`GuiSettings::convert_declined`). The
 //! Devices menu offers it for any compressed CHD. zlib comes first: it stays
 //! small. Uncompressed never rebuilds, but its file can be very large.
 
@@ -29,15 +30,27 @@ pub(crate) struct Conversion {
     format: ChdFormat,
     before: u64,
     job: Job<u64>,
+    /// Asked for at Power On: start this machine when it is done.
+    start_after: Option<String>,
+}
+
+/// Why the format question was asked, which sets its last choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asking {
+    /// Convert…: the formats and Cancel.
+    Menu,
+    /// The disk was just attached: the formats and Keep As Is.
+    Attached,
+    /// Power On: the formats, Start Without Converting and Cancel.
+    Start,
 }
 
 /// A format question waiting for its answer.
 pub(crate) struct Asked {
     key: u8,
     formats: Vec<ChdFormat>,
-    /// Asked because the disk was just attached: the last choice keeps it as
-    /// it is for good.
-    attached: Option<String>,
+    asking: Asking,
+    path: String,
 }
 
 /// A CHD just attached to the selected machine, waiting for the disk probe
@@ -56,6 +69,16 @@ impl AppController {
     /// The selected machine's `[scsi.KEY]` disk as a CHD: its label, path
     /// and header, once the disk probe has read it.
     fn chd_disk(&self, key: u8) -> Option<(String, String, ChdHeader)> {
+        self.chd_disk_with(key, false)
+    }
+
+    /// As `chd_disk`, reading the header itself when the probe has not yet
+    /// (an explicit Convert or Power On, which reads the disk anyway).
+    fn chd_disk_now(&self, key: u8) -> Option<(String, String, ChdHeader)> {
+        self.chd_disk_with(key, true)
+    }
+
+    fn chd_disk_with(&self, key: u8, now: bool) -> Option<(String, String, ChdHeader)> {
         let cfg = self.config();
         let d = cfg.scsi.get(&key)?;
         if d.is_cdrom() || d.path.trim().is_empty() {
@@ -64,7 +87,11 @@ impl AppController {
         let dir = self.machine_dir()?;
         let path = machines::resolve(&dir, &d.path).to_string_lossy().into_owned();
         self.probe.readable(&path);
-        let header = self.probe.chd_header(&path)?;
+        let header = match self.probe.chd_header(&path) {
+            Some(h) => h,
+            None if now && !self.probe.checked(&path) => chd_convert::header(std::path::Path::new(&path))?,
+            None => return None,
+        };
         let label = t!("convert-disk-label", id = crate::model::hardware::scsi_name(cfg, key));
         Some((label, path, header))
     }
@@ -146,9 +173,28 @@ impl AppController {
         self.attach_checks = checks;
         if let Some(key) = ask {
             if !self.session().is_running() {
-                self.ask(key, true, fx);
+                self.ask(key, Asking::Attached, fx);
             }
         }
+    }
+
+    /// Before Power On: a slow CHD the user has not answered for is asked
+    /// about first. `true` when it asked (the start waits for the answer).
+    pub(crate) fn ask_before_start(&mut self, fx: &mut Vec<Effect>) -> bool {
+        if self.conversion.is_some() {
+            return false;
+        }
+        let keys: Vec<u8> = self.config().scsi.keys().copied().collect();
+        for key in keys {
+            let slow = self
+                .chd_disk_now(key)
+                .is_some_and(|(_, path, h)| h.slow() && !self.prefs().convert_declined.contains(&path));
+            if slow {
+                self.ask(key, Asking::Start, fx);
+                return self.pending_convert.is_some();
+            }
+        }
+        false
     }
 
     pub(crate) fn convert_enabled(&self) -> Enabled {
@@ -168,15 +214,15 @@ impl AppController {
 
     /// Ask which format `[scsi.KEY]` converts to.
     pub(crate) fn ask_convert(&mut self, key: u8, fx: &mut Vec<Effect>) {
-        self.ask(key, false, fx);
+        self.ask(key, Asking::Menu, fx);
     }
 
-    fn ask(&mut self, key: u8, attached: bool, fx: &mut Vec<Effect>) {
+    fn ask(&mut self, key: u8, asking: Asking, fx: &mut Vec<Effect>) {
         if let Enabled::No(why) = self.convert_enabled() {
             fx.push(Effect::Toast(why));
             return;
         }
-        let Some((label, path, h)) = self.chd_disk(key).filter(|(_, _, h)| h.compressed()) else {
+        let Some((label, path, h)) = self.chd_disk_now(key).filter(|(_, _, h)| h.compressed()) else {
             fx.push(Effect::Toast(t!("convert-not-compressed")));
             return;
         };
@@ -197,46 +243,68 @@ impl AppController {
         message.push_str(&t!("convert-uncompressed-body", size = human(h.logical_bytes)));
         message.push_str("\n\n");
         message.push_str(&t!("convert-outro"));
-        if attached {
-            message.push_str("\n\n");
-            message.push_str(&t!("convert-keep-body"));
-            choices.push(t!("convert-keep"));
-        } else {
-            choices.push(t!("common-cancel"));
-        }
+        let title = match asking {
+            Asking::Menu => {
+                choices.push(t!("common-cancel"));
+                t!("convert-title", disk = label.as_str())
+            }
+            Asking::Attached => {
+                message.push_str("\n\n");
+                message.push_str(&t!("convert-keep-body"));
+                choices.push(t!("convert-keep"));
+                t!("convert-title", disk = label.as_str())
+            }
+            Asking::Start => {
+                message.push_str("\n\n");
+                message.push_str(&t!("convert-start-body"));
+                choices.push(t!("convert-start-anyway"));
+                choices.push(t!("common-cancel"));
+                t!("convert-start-title", disk = label.as_str())
+            }
+        };
         fx.push(Effect::Choose(ChoiceSpec {
             purpose: CONVERT_FORMAT,
-            title: t!("convert-title", disk = label.as_str()),
+            title,
             message,
-            dismiss: formats.len(),
+            // Closing the question: Cancel, or Keep As Is after attaching.
+            dismiss: choices.len() - 1,
             default: Some(0),
             destructive: Vec::new(),
             choices,
         }));
-        self.pending_convert = Some(Asked { key, formats, attached: attached.then_some(path) });
+        self.pending_convert = Some(Asked { key, formats, asking, path });
     }
 
     /// The format question's answer.
     pub(crate) fn convert_answer(&mut self, a: &Answer, fx: &mut Vec<Effect>) -> bool {
         let Answer::Chose { purpose: CONVERT_FORMAT, index } = a else { return false };
         let Some(asked) = self.pending_convert.take() else { return true };
-        let Some(&format) = asked.formats.get(*index) else {
-            // Keep As Is, after attaching: never ask about this disk again.
-            if let Some(path) = asked.attached {
-                self.decline_path(path, fx);
-            }
+        if let Some(&format) = asked.formats.get(*index) {
+            let start_after = (asked.asking == Asking::Start).then(|| self.selected().map(str::to_string)).flatten();
+            self.start_convert(asked.key, format, start_after, fx);
             return true;
-        };
-        self.start_convert(asked.key, format, fx);
+        }
+        // The choice after the formats: Keep As Is, or Start Without
+        // Converting (which keeps it too); Cancel after that.
+        if *index == asked.formats.len() {
+            match asked.asking {
+                Asking::Attached => self.decline_path(asked.path, fx),
+                Asking::Start => {
+                    self.decline_path(asked.path, fx);
+                    self.power_on(false, fx);
+                }
+                Asking::Menu => {}
+            }
+        }
         true
     }
 
-    fn start_convert(&mut self, key: u8, format: ChdFormat, fx: &mut Vec<Effect>) {
+    fn start_convert(&mut self, key: u8, format: ChdFormat, start_after: Option<String>, fx: &mut Vec<Effect>) {
         if let Enabled::No(why) = self.convert_enabled() {
             fx.push(Effect::Toast(why));
             return;
         }
-        let Some((label, path, h)) = self.chd_disk(key) else { return };
+        let Some((label, path, h)) = self.chd_disk_now(key) else { return };
         // The browser holds the image open; it must not see the file change.
         if !self.close_browser(fx) {
             return;
@@ -256,7 +324,7 @@ impl AppController {
             };
             chd_convert::convert(&job_path, format, &mut progress, &|| ctx.cancelled()).map_err(|e| e.to_string())
         });
-        self.conversion = Some(Conversion { path, label, format, before: h.file_bytes, job });
+        self.conversion = Some(Conversion { path, label, format, before: h.file_bytes, job, start_after });
     }
 
     pub(crate) fn cancel_convert(&mut self) {
@@ -278,6 +346,7 @@ impl AppController {
         let Some(c) = self.conversion.take() else { return };
         self.probe.forget(&c.path);
         let human = super::disk_browser::human;
+        let converted = matches!(result, Some(Ok(_)));
         fx.push(Effect::Toast(match result {
             Some(Ok(size)) => {
                 let format = match c.format {
@@ -290,6 +359,10 @@ impl AppController {
             Some(Err(e)) => t!("convert-failed", disk = c.label.as_str(), error = e),
             None => t!("convert-failed", disk = c.label.as_str(), error = "?"),
         }));
+        // Asked for at Power On: start now, if that machine is still the one.
+        if converted && c.start_after.is_some() && c.start_after.as_deref() == self.selected() && !self.session().is_running() {
+            self.power_on(false, fx);
+        }
     }
 }
 

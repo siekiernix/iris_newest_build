@@ -142,7 +142,7 @@ impl AppController {
                     self.session_mut().pending = Pending::RollBack(key);
                 }
             }
-            SessionAction::SynchronizeDisks => self.session_mut().stop_now(),
+            SessionAction::SynchronizeDisks => self.session_mut().stop_now(fx),
             SessionAction::CheckFolderGrants => {
                 let needs = machines::chd_dirs_needing_grant(self.config());
                 if !needs.is_empty() {
@@ -336,6 +336,10 @@ impl AppController {
                 return;
             }
         }
+        // A slow compressed CHD is asked about once, before the first start.
+        if self.ask_before_start(fx) {
+            return;
+        }
         // An older GUI wrote an empty `prom` for the built-in PROM; the core
         // reads that as a file name.
         if cfg.prom.is_empty() {
@@ -388,7 +392,11 @@ impl AppController {
                     self.session_mut().send(Cmd::HaltIrix);
                     fx.push(Effect::Toast(t!("toast-halt-sent")));
                 }
-                2 => self.session_mut().send(Cmd::Stop),
+                2 => {
+                    self.session_mut().mark_stopping();
+                    fx.push(Effect::Toast(t!("toast-stopping")));
+                    self.session_mut().send(Cmd::Stop);
+                }
                 _ => {}
             },
             (Answer::Chose { purpose: session::MISSING, index }, Pending::Missing(keys)) => match index {

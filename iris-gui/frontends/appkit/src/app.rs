@@ -782,6 +782,10 @@ pub fn disk_menu() -> Option<Vec<iris_gui_core::controller::commands::MenuGroup>
     with(|s| s.app.disk_menu())
 }
 
+pub fn machine_menu(name: &str) -> Option<Vec<Vec<iris_gui_core::controller::commands::MenuEntry>>> {
+    with(|s| s.app.machine_menu(name))
+}
+
 pub fn select_machine(name: String) {
     dispatch(AppAction::Select(name));
 }

@@ -19,6 +19,11 @@ fn system(mtm: MainThreadMarker, title: &str, action: Sel, key: &str) -> Retaine
     unsafe { NSMenuItem::initWithTitle_action_keyEquivalent(mtm.alloc(), &ns(title), Some(action), &ns(key)) }
 }
 
+/// A menu item that runs the command `id` (a context menu's entry).
+pub fn command_item(mtm: MainThreadMarker, title: &str, id: &str) -> Retained<NSMenuItem> {
+    ours(mtm, &KeyMap::default(), title, id)
+}
+
 /// An item of ours: reports `id`, with the key map's shortcut for it.
 fn ours(mtm: MainThreadMarker, keys: &KeyMap, title: &str, id: &str) -> Retained<NSMenuItem> {
     let it = system(mtm, title, sel!(act:), "");

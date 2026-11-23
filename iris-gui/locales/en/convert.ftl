@@ -27,3 +27,6 @@ app-busy-reason = Running a machine or working on its disks
 convert-keep = Keep As Is
 convert-keep-body = Keep As Is leaves the disk compressed and stops suggesting this; Devices > Convert for Quicker Stops… still converts it later.
 convert-keep-tip = Don't suggest converting this disk again. Devices > Convert for Quicker Stops… still converts it.
+convert-start-title = Convert { $disk } before starting?
+convert-start-body = Start Without Converting keeps the disk as it is and won't ask again; Devices > Convert for Quicker Stops… still converts it later. After a conversion, the machine starts by itself.
+convert-start-anyway = Start Without Converting

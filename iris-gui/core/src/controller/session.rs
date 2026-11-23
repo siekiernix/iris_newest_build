@@ -214,6 +214,8 @@ pub struct SessionController {
     /// The disc in each CD-ROM (by SCSI id) since this run changed it: the
     /// config keeps the disc the machine started with.
     live_discs: std::collections::HashMap<u8, Option<String>>,
+    /// A stop was asked for and the worker has not reported it done.
+    stopping: bool,
 }
 
 /// What a question the session asked is about.
@@ -263,6 +265,7 @@ impl SessionController {
             emu: EmulatorHandle::spawn(notify),
             syncing: None,
             live_discs: Default::default(),
+            stopping: false,
             follower: None,
             starting: false,
             started: None,
@@ -425,6 +428,8 @@ impl SessionController {
         let s = &self.emu.status;
         let live = matches!(state, RunState::Running | RunState::Halted);
         let run_label = match state {
+            _ if self.syncing.is_some() => t!("status-syncing"),
+            RunState::Running | RunState::Halted | RunState::PoweredOff if self.stopping => t!("status-stopping"),
             RunState::Stopped => t!("status-stopped"),
             RunState::Starting => t!("status-starting"),
             RunState::Running => t!("status-running"),
@@ -596,6 +601,7 @@ impl SessionController {
                 }
                 Evt::Stopped => {
                     self.starting = false;
+                    self.stopping = false;
                     self.live_discs.clear();
                     self.restore_after_start = None;
                     self.events.push(SessionEvent::Stopped);
@@ -685,17 +691,25 @@ impl SessionController {
             }));
             return;
         }
-        self.stop_now();
+        self.stop_now(fx);
     }
 
-    /// Stop without asking; folds pending CHD diffs first.
-    pub(crate) fn stop_now(&mut self) {
-        if self.emu.has_pending_chd_sync() {
+    /// Stop without asking; folds pending CHD diffs first, and says which.
+    pub(crate) fn stop_now(&mut self, fx: &mut Vec<Effect>) {
+        self.stopping = true;
+        let syncing = self.emu.has_pending_chd_sync();
+        fx.push(Effect::Toast(if syncing { t!("toast-stopping-sync") } else { t!("toast-stopping") }));
+        if syncing {
             self.syncing = Some(SyncProgress { disk: 0, total: 0, fraction: 0.0 });
             self.emu.send(Cmd::SyncDisks);
         } else {
             self.emu.send(Cmd::Stop);
         }
+    }
+
+    /// A stop was sent another way (a forced Power Off).
+    pub(crate) fn mark_stopping(&mut self) {
+        self.stopping = true;
     }
 
     pub(crate) fn send(&self, cmd: Cmd) {

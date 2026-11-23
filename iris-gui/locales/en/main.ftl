@@ -207,6 +207,8 @@ status-halted = Halted, safe to stop
 status-prom = PROM
 status-running = IRIX running
 status-stopped = Stopped
+status-stopping = Stopping…
+status-syncing = Applying disk changes…
 # $mips is a whole number.
 status-mips = { $mips } MIPS
 status-mips-tip = Emulation speed in millions of guest instructions per second.
@@ -275,6 +277,8 @@ fb-head = Head { $head }
 fb-powered-off = Powered off
 toast-guest-halted = IRIX halted. Mouse and keyboard released; click the display to capture them again.
 toast-guest-off-syncing = IRIX powered off. Synchronizing disks…
+toast-stopping = Stopping the machine…
+toast-stopping-sync = Stopping the machine and applying its disk changes. A compressed CHD is rebuilt in full, which can take a few minutes.
 
 ## Machines
 

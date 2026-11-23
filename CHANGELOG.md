@@ -64,7 +64,12 @@ hashes are given where a change is easiest to understand by reading the commit.
   tarball is unchanged.
 - IRIS Preview points out CHD disks whose compression makes every stop slow
   and converts them to zlib or uncompressed, which stops much faster. It asks
-  once when such a disk is attached; Keep As Is stops the suggestion.
+  when such a disk is attached and before the machine first starts; Keep As
+  Is stops the suggestion.
+- IRIS Preview: right-click a machine in the library for Start, Settings,
+  Browse Files, Duplicate, Rename, Delete and Show in Finder; Edit Settings…
+  on the machine page; no disc button without a CD-ROM drive; the status bar
+  says when a stop is applying disk changes.
 - IRIS Preview's disk browser replays the XFS log of an IRIX 6.5 disk that was
   not shut down cleanly; Detach Display shows the display again; the status
   bar shows progress while disks synchronize.

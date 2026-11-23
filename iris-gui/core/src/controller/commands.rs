@@ -189,7 +189,7 @@ impl AppController {
     pub fn toolbar_layout(&self) -> Vec<&'static str> {
         let s = self.session();
         if s.is_running() || s.run_state() == super::session::RunState::Starting {
-            vec![
+            let mut v = vec![
                 tb::SHOW_LIBRARY,
                 tb::SHUT_DOWN_GUEST,
                 tb::RESTART,
@@ -202,7 +202,12 @@ impl AppController {
                 tb::FULL_SCREEN,
                 tb::DETACH_DISPLAY,
                 tb::SERIAL_CONSOLE,
-            ]
+            ];
+            // A machine with no CD-ROM drive has no use for the disc button.
+            if !self.config().scsi.values().any(|d| d.is_cdrom()) {
+                v.retain(|id| *id != tb::DISC);
+            }
+            v
         } else {
             vec![
                 tb::SHOW_LIBRARY,
@@ -270,9 +275,45 @@ impl AppController {
         out
     }
 
+    /// A library row's context menu for `machine`, in sections: what you do
+    /// with it, what you do to it, where it lives. Each entry selects the
+    /// machine first (`ids::item::ON_MACHINE`).
+    pub fn machine_menu(&self, machine: &str) -> Vec<Vec<MenuEntry>> {
+        use super::ids::item;
+        let entry = |cmd: &str, label: String| {
+            let enabled = if cmd.starts_with(item::START_MACHINE) || self.selected() == Some(machine) {
+                self.command_enabled(cmd)
+            } else {
+                // Not selected yet: what depends on the machine is checked
+                // once it is (choosing the entry selects it).
+                match self.can_change_machine() {
+                    Enabled::Yes => self.command_enabled(cmd),
+                    no => no,
+                }
+            };
+            MenuEntry { id: item::on_machine(machine, cmd), label, tooltip: None, enabled }
+        };
+        vec![
+            vec![
+                entry(&item::id(item::START_MACHINE, machine), t!("ctx-start")),
+                entry(tb::MACHINE_SETTINGS, t!("ctx-settings")),
+                entry(tb::BROWSE_FILES, t!("ctx-browse")),
+            ],
+            vec![
+                entry(menu::DUPLICATE, t!("mb-duplicate")),
+                entry(menu::RENAME, t!("mb-rename")),
+                entry(menu::DELETE, t!("mb-delete")),
+            ],
+            vec![entry(menu::SHOW_IN_FINDER, t!("mb-show-in-finder"))],
+        ]
+    }
+
     /// Whether the command `id` can run now, and if not why.
     pub fn command_enabled(&self, id: &str) -> Enabled {
         use super::ids::item;
+        if let Some((_, cmd)) = id.strip_prefix(item::ON_MACHINE).and_then(|r| r.split_once(':')) {
+            return self.command_enabled(cmd);
+        }
         if let Some(c) = self.light_command(id) {
             return self.command_enabled(&c);
         }
@@ -367,6 +408,19 @@ impl AppController {
 
     /// Run the command `id` (a toolbar item, a menu item or a key-map chord).
     pub fn command(&mut self, id: &str) -> Routed {
+        if let Some((machine, cmd)) = id.strip_prefix(super::ids::item::ON_MACHINE).and_then(|r| r.split_once(':')) {
+            let mut fx = Vec::new();
+            if self.selected() != Some(machine) {
+                fx.extend(self.apply(AppAction::Select(machine.to_string())));
+                if self.selected() != Some(machine) {
+                    return Routed { effects: fx, shell: None };
+                }
+            }
+            let mut r = self.command(cmd);
+            fx.append(&mut r.effects);
+            r.effects = fx;
+            return r;
+        }
         if let Some(c) = self.light_command(id) {
             return self.command(&c);
         }

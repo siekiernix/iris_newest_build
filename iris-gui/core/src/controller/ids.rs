@@ -85,6 +85,14 @@ pub mod item {
     pub const CONVERT_DISK: &str = "disk.convert:";
     /// Followed by the disk's key: keep it as it is, no more suggestions.
     pub const DECLINE_CONVERT: &str = "disk.keep:";
+    /// `on:<machine>:<command id>`: select the machine, then run the command
+    /// (a library row's context menu). Machine names never hold a colon.
+    pub const ON_MACHINE: &str = "on:";
+
+    /// The id that runs `command` on `machine`.
+    pub fn on_machine(machine: &str, command: &str) -> String {
+        format!("{ON_MACHINE}{machine}:{command}")
+    }
 
     pub fn id(prefix: &str, item: impl std::fmt::Display) -> String {
         format!("{prefix}{item}")

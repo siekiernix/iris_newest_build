@@ -26,6 +26,7 @@ ov-forwards = { $count ->
 ov-saved-states = Saved states
 ov-no-states = No saved states yet.
 ov-browse = Browse files
+ov-edit-settings = Edit Settings…
 ov-no-machine = No machine yet. Choose File > New Machine.
 ov-restore = Restore
 ov-rename = Rename

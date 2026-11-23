@@ -212,6 +212,11 @@ fn details(mtm: MainThreadMarker, o: &Overview) -> Vec<Retained<NSView>> {
         line.widthAnchor().constraintLessThanOrEqualToConstant(WIDTH).setActive(true);
         rows.push(view(&line));
     }
+    // Changing the hardware: the same as the toolbar's Settings button.
+    let edit = icon_button(mtm, &t!("ov-edit-settings"), tb::MACHINE_SETTINGS, Icon::MachineSettings);
+    edit.setTitle(&ns(&t!("ov-edit-settings")));
+    edit.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
+    rows.push(view(&edit));
     rows
 }
 

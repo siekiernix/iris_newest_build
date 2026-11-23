@@ -1311,6 +1311,62 @@ mod tests {
     }
 
     #[test]
+    fn a_rows_context_menu_selects_its_machine_first() {
+        let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
+        let root = TempRoot::new("ctxmenu");
+        let mut app = app_in(&root, &["alpha", "beta"]);
+        assert_eq!(app.selected(), Some("alpha"));
+        let menu = app.machine_menu("beta");
+        let ids: Vec<&str> = menu.iter().flatten().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids[0], "on:beta:machine.start:beta");
+        assert!(ids.contains(&"on:beta:toolbar.machine-settings"), "{ids:?}");
+        assert!(ids.contains(&"on:beta:menu.rename") && ids.contains(&"on:beta:menu.delete"), "{ids:?}");
+        // Settings… on beta selects beta and opens the settings.
+        let r = app.command("on:beta:toolbar.machine-settings");
+        assert_eq!(app.selected(), Some("beta"));
+        assert_eq!(r.shell, Some(super::super::commands::ShellCommand::Settings));
+        app.shutdown();
+    }
+
+    #[test]
+    fn power_on_stops_to_ask_about_a_slow_chd() {
+        use super::super::convert::CONVERT_FORMAT;
+        use libchdman_rs::hd::{create_from_reader, HdCreateOptions};
+        let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
+        let root = TempRoot::new("convert-start");
+        let mut app = app_in(&root, &["alpha"]);
+        let chd = root.0.join("slow.chd");
+        let opts = HdCreateOptions {
+            logical_size: 1 << 20,
+            hunk_size: 4096,
+            unit_size: 512,
+            codecs: [libchdman_rs::CHD_CODEC_LZMA, 0, 0, 0],
+            geometry: None,
+            ident: None,
+        };
+        create_from_reader(&vec![7u8; 1 << 20][..], &chd, opts, &mut |_| {}, &|| false).unwrap();
+        app.config_mut().scsi.clear();
+        app.config_mut().scsi.insert(1, iris::config::ScsiDeviceConfig { path: chd.to_string_lossy().into(), ..Default::default() });
+        app.apply(AppAction::ConfigEdited);
+        let fx = app.apply(AppAction::Session(super::super::session::SessionAction::PowerOn));
+        let c = fx
+            .iter()
+            .find_map(|e| match e {
+                Effect::Choose(c) if c.purpose == CONVERT_FORMAT => Some(c.clone()),
+                _ => None,
+            })
+            .expect("Power On asks about the slow CHD first");
+        assert_eq!(c.choices.len(), 4, "{:?}", c.choices);
+        assert_eq!(c.choices[2], t!("convert-start-anyway"));
+        assert!(!app.session().is_running(), "and does not start yet");
+        // Cancel: nothing starts, nothing is remembered.
+        app.apply(AppAction::Answer(Answer::Chose { purpose: CONVERT_FORMAT, index: 3 }));
+        assert!(!app.session().is_running());
+        assert!(app.prefs().convert_declined.is_empty());
+        app.shutdown();
+    }
+
+    #[test]
     fn every_help_page_has_a_title_and_lines() {
         use super::super::help::{HelpPage, Line};
         let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
