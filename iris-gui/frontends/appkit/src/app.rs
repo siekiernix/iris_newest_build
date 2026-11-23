@@ -114,9 +114,23 @@ pub fn run() {
         unsafe { msg_send![super(this), init] }
     };
     ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    set_icon(&ns_app);
     DELEGATE.with(|d| *d.borrow_mut() = Some(delegate));
     crate::menu::build(mtm);
     ns_app.run();
+}
+
+/// The app's icon from the repository's `icon.icns`. A bundle has it in its
+/// Info.plist; a bare binary (`cargo run`) would otherwise show the generic
+/// executable icon in the Dock and in alerts.
+fn set_icon(app: &NSApplication) {
+    static ICNS: &[u8] = include_bytes!("../../../assets/icons/icon.icns");
+    let data = objc2_foundation::NSData::with_bytes(ICNS);
+    match objc2_app_kit::NSImage::initWithData(objc2::AnyThread::alloc(), &data) {
+        // SAFETY: a valid image; AppKit keeps it.
+        Some(img) => unsafe { app.setApplicationIconImage(Some(&img)) },
+        None => eprintln!("iris-appkit: the app icon would not load"),
+    }
 }
 
 fn start(mtm: MainThreadMarker) {

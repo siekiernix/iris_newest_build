@@ -159,6 +159,12 @@ fn pick(mtm: MainThreadMarker, spec: &PickSpec, folder: bool) -> Vec<PathBuf> {
 
 fn alert(mtm: MainThreadMarker, title: &str, message: &str) -> Retained<NSAlert> {
     let a = NSAlert::new(mtm);
+    // Unbundled (cargo run), NSAlert would show the icon of the folder the
+    // binary is in; the app's own icon is set at startup.
+    if let Some(icon) = objc2_app_kit::NSApplication::sharedApplication(mtm).applicationIconImage() {
+        // SAFETY: a valid image.
+        unsafe { a.setIcon(Some(&icon)) };
+    }
     a.setMessageText(&ns(title));
     a.setInformativeText(&ns(message));
     a

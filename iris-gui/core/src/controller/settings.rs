@@ -454,9 +454,12 @@ impl SettingsController {
 
         // Disks.
         if !p.is_ip35_bricks() {
-            let rows: Vec<DiskRow> = cfg
-                .scsi
-                .iter()
+            // `scsi` is a map with no order: list targets by controller and
+            // ID, so rows (and the ids that name them) stay put between edits.
+            let mut targets: Vec<(&u8, &ScsiDeviceConfig)> = cfg.scsi.iter().collect();
+            targets.sort_by_key(|(k, d)| d.placement(**k));
+            let rows: Vec<DiskRow> = targets
+                .into_iter()
                 .map(|(&key, d)| DiskRow {
                     key,
                     name: hardware::scsi_name(cfg, key),
@@ -1177,6 +1180,17 @@ mod tests {
         c.apply(SettingsAction::Disk(DiskEdit::Add(ScsiKind::Cdrom)), &mut cfg, None);
         assert!(cfg.scsi.values().any(|d| d.is_cdrom()));
         let key = *cfg.scsi.keys().next().unwrap();
+        // Rows come in SCSI order, whatever the map's order.
+        c.apply(SettingsAction::Disk(DiskEdit::Add(ScsiKind::Disk)), &mut cfg, None);
+        c.apply(SettingsAction::Disk(DiskEdit::Add(ScsiKind::Disk)), &mut cfg, None);
+        let rows = c.sections(&cfg, false).into_iter().flat_map(|s| s.fields).find_map(|f| match f.kind {
+            FieldKind::DiskTable(r) => Some(r),
+            _ => None,
+        });
+        let keys: Vec<u8> = rows.unwrap().iter().map(|r| r.key).collect();
+        assert_eq!(keys, [1, 2, 3]);
+        cfg.scsi.remove(&2);
+        cfg.scsi.remove(&3);
         // ID 0 is the controller: the first target goes at 1, and the config stays valid.
         assert_eq!(key, 1);
         assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
