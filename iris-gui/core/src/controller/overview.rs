@@ -22,6 +22,9 @@ pub struct HardwareRow {
     pub target: Option<LightTarget>,
     /// The row has a browse-files button.
     pub browsable: bool,
+    /// The disk is a CHD whose compression makes every stop slow: the row
+    /// has a convert button (`ids::item::CONVERT_DISK`).
+    pub convertible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +71,7 @@ impl AppController {
                 note: String::new(),
                 target: None,
                 browsable: false,
+                convertible: false,
             },
             HardwareRow {
                 icon: Icon::Info,
@@ -76,6 +80,7 @@ impl AppController {
                 note: String::new(),
                 target: None,
                 browsable: false,
+                convertible: false,
             },
             HardwareRow {
                 icon: Icon::DisplayScale,
@@ -91,6 +96,7 @@ impl AppController {
                 note: String::new(),
                 target: None,
                 browsable: false,
+                convertible: false,
             },
             HardwareRow {
                 icon: Icon::Edit,
@@ -99,6 +105,7 @@ impl AppController {
                 note: String::new(),
                 target: None,
                 browsable: false,
+                convertible: false,
             },
         ];
         let dir = self.machine_dir();
@@ -127,6 +134,7 @@ impl AppController {
                         note,
                         target: key.map(|key| LightTarget::Disk { key }),
                         browsable: key.is_some(),
+                        convertible: key.is_some_and(|k| self.suggest_convert(k)),
                     }
                 }
                 Drive::Cdrom { id, path } => {
@@ -138,6 +146,7 @@ impl AppController {
                         note: if missing.iter().any(|m| m.name == *id) { t!("ov-missing") } else { String::new() },
                         target: key.map(|key| LightTarget::CdRom { key }),
                         browsable: key.is_some() && !path.is_empty(),
+                        convertible: false,
                     }
                 }
                 Drive::Daynaport { id } => HardwareRow {
@@ -147,6 +156,7 @@ impl AppController {
                     note: String::new(),
                     target: None,
                     browsable: false,
+                    convertible: false,
                 },
                 Drive::Nvme { path } => HardwareRow {
                     icon: Icon::Disk,
@@ -155,6 +165,7 @@ impl AppController {
                     note: String::new(),
                     target: None,
                     browsable: false,
+                    convertible: false,
                 },
                 Drive::FibreChannel { id, path } => HardwareRow {
                     icon: Icon::Disk,
@@ -163,6 +174,7 @@ impl AppController {
                     note: String::new(),
                     target: None,
                     browsable: false,
+                    convertible: false,
                 },
             };
             rows.push(row);
@@ -179,10 +191,16 @@ impl AppController {
             note: if cfg.port_forward.is_empty() { String::new() } else { t!("ov-forwards", count = cfg.port_forward.len()) },
             target: Some(LightTarget::Network),
             browsable: false,
+            convertible: false,
         });
         let mut warnings = Vec::new();
         for m in &missing {
             warnings.push((Severity::Warning, missing_line(m)));
+        }
+        for r in &rows {
+            if r.convertible {
+                warnings.push((Severity::Info, t!("ov-convert-suggest", disk = r.label.as_str())));
+            }
         }
         if let Err(e) = cfg.validate() {
             warnings.push((Severity::Error, t!("toast-invalid-config", error = e.to_string())));

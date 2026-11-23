@@ -42,6 +42,8 @@ pub struct MainWindow {
     /// While disks synchronize (a CHD fold after a stop): how far along.
     sync_bar: Retained<objc2_app_kit::NSProgressIndicator>,
     sync_label: Retained<NSTextField>,
+    /// Cancels a disk conversion; shown while one runs.
+    sync_cancel: Retained<NSButton>,
     _toolbar_delegate: Retained<toolbar::Delegate>,
     toolbar: Retained<objc2_app_kit::NSToolbar>,
     toolbar_layout: Vec<&'static str>,
@@ -120,6 +122,9 @@ impl MainWindow {
         let sync_label = secondary(mtm, "");
         sync_label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(12.0, 0.0)));
         sync_label.setHidden(true);
+        let sync_cancel = crate::ui::button(mtm, &t!("convert-cancel"), iris_gui_core::controller::convert::CANCEL_ID);
+        sync_cancel.setControlSize(objc2_app_kit::NSControlSize::Small);
+        sync_cancel.setHidden(true);
         let lights = NSStackView::new(mtm);
         lights.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
         lights.setSpacing(6.0);
@@ -131,6 +136,7 @@ impl MainWindow {
                 as_view(&toast),
                 Retained::into_super(sync_bar.clone()),
                 as_view(&sync_label),
+                Retained::into_super(Retained::into_super(sync_cancel.clone())),
                 spacer,
                 Retained::into_super(lights.clone()),
             ]),
@@ -177,6 +183,7 @@ impl MainWindow {
             toast,
             sync_bar,
             sync_label,
+            sync_cancel,
             _toolbar_delegate: delegate,
             toolbar: tb.clone(),
             toolbar_layout: Vec::new(),
@@ -328,7 +335,22 @@ impl MainWindow {
         if self.status.stringValue().to_string() != s {
             self.status.setStringValue(&ns(&s));
         }
+        let mut converting = false;
+        if let Some(job) = app.conversion() {
+            // A disk conversion: its label, how far, and Cancel.
+            let pct = (job.progress.fraction().unwrap_or(0.0) * 100.0).round();
+            self.sync_bar.setHidden(false);
+            self.sync_bar.setDoubleValue(pct as f64);
+            self.sync_bar.setToolTip(None);
+            self.sync_label.setStringValue(&ns(&format!("{}  {pct:.0}%", job.label)));
+            self.sync_label.setHidden(false);
+            self.sync_cancel.setHidden(!job.can_cancel || job.cancel_requested);
+            converting = true;
+        } else {
+            self.sync_cancel.setHidden(true);
+        }
         match app.session().syncing() {
+            _ if converting => {}
             Some(p) => {
                 let pct = (p.overall() * 100.0).round();
                 self.sync_bar.setHidden(false);

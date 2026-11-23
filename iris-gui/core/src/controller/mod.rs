@@ -23,6 +23,7 @@ pub mod app;
 pub mod bench;
 pub mod camera;
 pub mod commands;
+pub mod convert;
 pub mod debug;
 pub mod disk_browser;
 pub mod display;

@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::chd_convert::ChdHeader;
 use super::job::Notify;
 
 /// How long an answer stands before the next ask checks again.
@@ -25,12 +26,14 @@ enum Probe {
 
 pub struct DiskProbe {
     cache: Arc<Mutex<HashMap<PathBuf, Probe>>>,
+    /// A CHD's header, read by the same check (`None`: not a CHD).
+    headers: Arc<Mutex<HashMap<PathBuf, Option<ChdHeader>>>>,
     notify: Arc<dyn Notify>,
 }
 
 impl DiskProbe {
     pub fn new(notify: Arc<dyn Notify>) -> Self {
-        Self { cache: Arc::default(), notify }
+        Self { cache: Arc::default(), headers: Arc::default(), notify }
     }
 
     /// Whether `path` (absolute, or a URL) was readable when last checked;
@@ -58,14 +61,21 @@ impl DiskProbe {
             cache.insert(key.clone(), Probe::Checking { since: now, last });
             drop(cache);
             let cache = self.cache.clone();
+            let headers = self.headers.clone();
             let notify = self.notify.clone();
             let spawned = std::thread::Builder::new().name("iris-disk-probe".into()).spawn(move || {
                 let ok = super::machines::readable(&key.to_string_lossy());
+                let is_chd = key.extension().is_some_and(|e| e.eq_ignore_ascii_case("chd"));
+                let header = if ok && is_chd { super::chd_convert::header(&key) } else { None };
+                let new_header = {
+                    let mut h = headers.lock().unwrap_or_else(|e| e.into_inner());
+                    h.insert(key.clone(), header.clone()) != Some(header)
+                };
                 let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
                 let changed = !matches!(c.get(&key), Some(Probe::Checking { last: Some(l), .. }) if *l == ok);
                 c.insert(key, Probe::Known { readable: ok, at: Instant::now() });
                 drop(c);
-                if changed {
+                if changed || new_header {
                     notify.wake();
                 }
             });
@@ -74,6 +84,20 @@ impl DiskProbe {
             }
         }
         answer
+    }
+
+    /// The CHD header of `path` from its last check (`readable` starts one):
+    /// `None` until checked, and for anything that is not a CHD.
+    pub fn chd_header(&self, path: &str) -> Option<ChdHeader> {
+        let h = self.headers.lock().unwrap_or_else(|e| e.into_inner());
+        h.get(&PathBuf::from(path)).cloned().flatten()
+    }
+
+    /// Drop what is known about `path` (it was just rewritten).
+    pub fn forget(&self, path: &str) {
+        let key = PathBuf::from(path);
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+        self.headers.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
     }
 
     /// Paths whose check has been running for longer than `d` (a share that

@@ -81,6 +81,8 @@ pub mod item {
     /// Each followed by the disk's key: merge or discard its copy-on-write changes.
     pub const COMMIT_COW: &str = "cow.commit:";
     pub const DISCARD_COW: &str = "cow.discard:";
+    /// Followed by the disk's key: convert its compressed CHD to a quicker format.
+    pub const CONVERT_DISK: &str = "disk.convert:";
 
     pub fn id(prefix: &str, item: impl std::fmt::Display) -> String {
         format!("{prefix}{item}")

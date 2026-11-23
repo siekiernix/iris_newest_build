@@ -36,6 +36,10 @@ struct Shell {
     camera: Option<crate::panels::CameraWindow>,
     bench: Option<crate::panels::BenchWindow>,
     help: Vec<crate::panels::HelpWindow>,
+    /// Held while the app works with no window in front (a machine running,
+    /// disks synchronizing, a disk converting): without it App Nap slows the
+    /// work several times over once the app is in the background.
+    busy: Option<Retained<objc2::runtime::ProtocolObject<dyn objc2::runtime::NSObjectProtocol>>>,
 }
 
 thread_local! {
@@ -169,7 +173,7 @@ fn start(mtm: MainThreadMarker) {
     head1.set_wake(wake.clone());
     win.window.makeKeyAndOrderFront(None);
     let empty = app.is_empty();
-    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None, new_machine: None, browser: None, prefs: None, net: None, serial: None, camera: None, bench: None, help: Vec::new() }));
+    SHELL.with(|s| *s.borrow_mut() = Some(Shell { app, win, wake, may_quit: false, settings: None, new_machine: None, browser: None, prefs: None, net: None, serial: None, camera: None, bench: None, help: Vec::new(), busy: None }));
     NSApplication::sharedApplication(mtm).activate();
     refresh();
     tick();
@@ -330,9 +334,29 @@ pub fn tick() {
     }
 }
 
+/// Hold or let go of the App Nap exemption as the work starts and ends.
+fn keep_awake(s: &mut Shell) {
+    let working = s.app.session().is_running()
+        || s.app.session().syncing().is_some()
+        || s.app.conversion().is_some()
+        || s.app.browser().is_some_and(|b| b.writing());
+    let info = objc2_foundation::NSProcessInfo::processInfo();
+    match (working, s.busy.take()) {
+        (true, None) => {
+            let options = objc2_foundation::NSActivityOptions::UserInitiatedAllowingIdleSystemSleep;
+            s.busy = Some(info.beginActivityWithOptions_reason(options, &crate::ui::ns(&t!("app-busy-reason"))));
+        }
+        (true, Some(a)) => s.busy = Some(a),
+        // SAFETY: the token beginActivity gave back, ended once.
+        (false, Some(a)) => unsafe { info.endActivity(&a) },
+        (false, None) => {}
+    }
+}
+
 fn refresh() {
     let m = mtm();
     let due = with(|s| {
+        keep_awake(s);
         s.win.refresh(m, &s.app);
         if let Some(w) = &mut s.settings {
             w.refresh(m, &s.app);

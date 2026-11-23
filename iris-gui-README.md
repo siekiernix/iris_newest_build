@@ -545,6 +545,23 @@ disks…", with per-disk progress). Under the macOS App Sandbox the fold needs
 write access to the *folder* holding the CHD, which is why the App Store build
 asks for folder grants (`clanker/macos/chd-fold-needs-folder-grant-not-file-grant.md`).
 
+A compressed CHD is rebuilt in full every time the machine stops, so the wait
+depends on the codecs, not on how much the guest wrote. chdman's default for
+hard disks (lzma first) is the slowest: about 2.5 minutes for a 4 GB IRIX disk
+on an Apple M1. IRIS Preview points such disks out on the machine page and
+offers **Convert…** there and in the Devices menu (**Convert for Quicker
+Stops…**), with the machine stopped:
+
+- **zlib** (offered first) keeps the file about the same size. Each stop still
+  rebuilds the disk, but faster (about 100 s against 167 s for that disk), and
+  every version of chdman and MAME reads it.
+- **Uncompressed** never rebuilds: the CHD is written in place. The file grows
+  to the space the disk uses (2.9 GB for that 4.3 GB disk), up to its full size.
+
+The file keeps its name, so the machine's settings do not change. Pending
+changes in a `.diff.chd` are folded in, and a cancelled or failed conversion
+leaves the disk as it was.
+
 ### Stop timeout for a wedged machine
 
 `Machine::stop()` begins with `cpu.stop()`, which blocks until the CPU thread

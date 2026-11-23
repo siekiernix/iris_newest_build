@@ -88,6 +88,10 @@ pub enum AppAction {
     Browser(super::disk_browser::BrowserAction),
     /// Close the disk browser (cancels its job).
     CloseBrowser,
+    /// Ask which format `[scsi.KEY]`, a compressed CHD, converts to.
+    ConvertDisk { key: u8 },
+    /// Stop the running disk conversion; the disk stays as it was.
+    CancelConversion,
     Answer(Answer),
 }
 
@@ -138,6 +142,9 @@ pub struct AppController {
     camera: super::camera::CameraTestController,
     /// The disk browser, while its window is open.
     browser: Option<super::disk_browser::DiskBrowserController>,
+    /// A disk being converted, and a format question waiting for its answer.
+    pub(crate) conversion: Option<super::convert::Conversion>,
+    pub(crate) pending_convert: Option<super::convert::Asked>,
     /// Disk images' readability, checked off the UI thread.
     pub(crate) probe: crate::model::disk_probe::DiskProbe,
     notify: Arc<dyn Notify>,
@@ -224,6 +231,8 @@ impl AppController {
             network: super::network::NetworkController::new(),
             camera: Default::default(),
             browser: None,
+            conversion: None,
+            pending_convert: None,
             probe: crate::model::disk_probe::DiskProbe::new(notify.clone()),
             notify,
             problems: Default::default(),
@@ -378,7 +387,7 @@ impl AppController {
     }
 
     /// Close the browser; `false` (with a toast) while it is writing.
-    fn close_browser(&mut self, fx: &mut Vec<Effect>) -> bool {
+    pub(crate) fn close_browser(&mut self, fx: &mut Vec<Effect>) -> bool {
         if let Some(b) = &mut self.browser {
             if b.writing() {
                 fx.push(Effect::Toast(t!("browser-busy")));
@@ -395,6 +404,9 @@ impl AppController {
     pub fn can_change_machine(&self) -> Enabled {
         if let Err(e) = self.prefs.ensure_writable() {
             return Enabled::No(e);
+        }
+        if self.conversion.is_some() {
+            return Enabled::No(t!("convert-busy"));
         }
         Enabled::when(self.session.is_idle(), || t!("toast-switch-machine-busy"))
     }
@@ -989,7 +1001,12 @@ impl Controller for AppController {
             AppAction::CloseBrowser => {
                 self.close_browser(&mut fx);
             }
+            AppAction::ConvertDisk { key } => self.ask_convert(key, &mut fx),
+            AppAction::CancelConversion => self.cancel_convert(),
             AppAction::Answer(a) => {
+                if self.convert_answer(&a, &mut fx) {
+                    return fx;
+                }
                 if a.purpose().starts_with("browser.") {
                     return self.apply(AppAction::Browser(super::disk_browser::BrowserAction::Answer(a)));
                 }
@@ -1036,6 +1053,7 @@ impl Controller for AppController {
         if let Some(b) = &mut self.browser {
             fx.extend(b.tick());
         }
+        self.convert_tick(&mut fx);
         if self.dirty_since.is_some_and(|t| t.elapsed() >= AUTOSAVE_AFTER) {
             self.flush(&mut fx);
         }

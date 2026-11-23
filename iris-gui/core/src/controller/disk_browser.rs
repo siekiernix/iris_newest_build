@@ -278,7 +278,7 @@ pub struct DiskBrowserController {
     notify: Arc<dyn Notify>,
 }
 
-fn human(n: u64) -> String {
+pub(crate) fn human(n: u64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = n as f64;
     let mut i = 0;

@@ -424,6 +424,7 @@ Mac App Store and sandbox constraints.
 | Note | Kind | Title |
 |---|---|---|
 | [appstore-private-api.md](macos/appstore-private-api.md) | rule | Mac App Store rejects winit's private SkyLight blur API (`CGSSetWindowBackgroundBlurRadius`) |
+| [app-nap-throttles-background-work.md](macos/app-nap-throttles-background-work.md) | rule | App Nap slowed a background CHD conversion 4x; the Mac app holds an NSProcessInfo activity while a machine runs, disks sync or a disk converts |
 | [chd-fold-needs-folder-grant-not-file-grant.md](macos/chd-fold-needs-folder-grant-not-file-grant.md) | rule | macOS App Sandbox: the CHD on-exit fold needs a *folder* grant, not a file grant |
 | [test-the-app-sandbox-locally-without-the-app-store.md](macos/test-the-app-sandbox-locally-without-the-app-store.md) | howto | Test the macOS App Sandbox locally — no App Store round-trip needed |
 | [drive-the-appkit-shell-with-the-screen-locked.md](macos/drive-the-appkit-shell-with-the-screen-locked.md) | howto | Script steps, scripted prompt answers and window captures for the AppKit preview; what stalls a script |

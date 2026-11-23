@@ -261,6 +261,9 @@ impl AppController {
                     entries.push(entry(item::id(item::COMMIT_COW, key), t!("menu-cow-commit"), Some(t!("menu-cow-commit-tip"))));
                     entries.push(entry(item::id(item::DISCARD_COW, key), t!("menu-cow-discard"), Some(t!("menu-cow-discard-tip"))));
                 }
+                if self.convertible(key) {
+                    entries.push(entry(item::id(item::CONVERT_DISK, key), t!("convert-menu"), Some(t!("convert-menu-tip"))));
+                }
                 out.push(MenuGroup { title, icon: Icon::Disk, entries });
             }
         }
@@ -289,6 +292,12 @@ impl AppController {
         }
         if id.starts_with(item::BROWSE_DISK) {
             return self.command_enabled(tb::BROWSE_FILES);
+        }
+        if id.starts_with(item::CONVERT_DISK) {
+            return self.convert_enabled();
+        }
+        if id == super::convert::CANCEL_ID {
+            return Enabled::Yes;
         }
         if let Some(a) = item_session(id) {
             return self.session_enabled(&a);
@@ -388,6 +397,10 @@ impl AppController {
         }
         if let Some(key) = id.strip_prefix(item::BROWSE_DISK).and_then(|k| k.parse().ok()) {
             r.effects = self.apply(AppAction::OpenBrowser { key });
+            return r;
+        }
+        if let Some(a) = super::convert::action_for(id) {
+            r.effects = self.apply(a);
             return r;
         }
         if let Some(name) = id.strip_prefix(item::START_MACHINE) {

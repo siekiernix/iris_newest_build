@@ -149,14 +149,15 @@ fn rule(mtm: MainThreadMarker, w: f64) -> Retained<NSView> {
 fn details(mtm: MainThreadMarker, o: &Overview) -> Vec<Retained<NSView>> {
     let mut rows: Vec<Retained<NSView>> = Vec::new();
     for (sev, text) in &o.warnings {
-        let icon = match sev {
-            Severity::Error => Icon::Error,
-            _ => Icon::Warning,
+        let (icon, tint) = match sev {
+            Severity::Error => (Icon::Error, NSColor::systemOrangeColor()),
+            Severity::Warning => (Icon::Warning, NSColor::systemOrangeColor()),
+            Severity::Info => (Icon::Info, NSColor::controlAccentColor()),
         };
         let mut parts: Vec<Retained<NSView>> = Vec::new();
         if let Some(img) = glyphs::icon(icon, text) {
             let iv = NSImageView::imageViewWithImage(&img, mtm);
-            iv.setContentTintColor(Some(&NSColor::systemOrangeColor()));
+            iv.setContentTintColor(Some(&tint));
             parts.push(view(&iv));
         }
         let l = NSTextField::wrappingLabelWithString(&ns(text), mtm);
@@ -192,6 +193,14 @@ fn details(mtm: MainThreadMarker, o: &Overview) -> Vec<Retained<NSView>> {
                 let b = icon_button(mtm, &t!("ov-browse"), &item::id(item::BROWSE_DISK, key), Icon::BrowseFiles);
                 b.setTitle(&ns(&t!("ov-browse")));
                 b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
+                parts.push(view(&b));
+            }
+        }
+        if r.convertible {
+            if let Some(iris_gui_core::controller::session::LightTarget::Disk { key }) = &r.target {
+                let b = button(mtm, &t!("ov-convert"), &item::id(item::CONVERT_DISK, key));
+                b.setBezelStyle(NSBezelStyle::Push);
+                b.setToolTip(Some(&ns(&t!("convert-menu-tip"))));
                 parts.push(view(&b));
             }
         }

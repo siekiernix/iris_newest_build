@@ -34,12 +34,14 @@ slowly here, and zlib alone rebuilds faster than zstd.
 | uncompressed | 26.2 s | 59.1 s | 0 s |
 | lzma (chdman default) | 30.3 s | 90.0 s | 143.2 s |
 | zstd | 25.6 s | 83.6 s | about 110 s (from the rebuilt file's time) |
+| zlib (converted in the app) | 30.5 s | 92.2 s | about 65 s (from the rebuilt file's time) |
 
 ## Rule
 
-For a disk that is booted and stopped often, convert to an uncompressed CHD:
-no sync at all, the fastest boot, at the cost of the file growing to the
-used size of the disk. zstd is not worth offering for speed: it saves about
-30 s per stop over lzma and needs chdman/MAME 0.247 or later. If a small
-compressed file is wanted, zlib alone syncs faster than zstd and every
-chdman reads it.
+IRIS Preview offers this conversion (`controller::convert`), zlib first:
+it keeps the file about the size it was and halves the wait after a stop,
+while uncompressed (no wait at all) can be very large for a big disk.
+lzma to zlib took 95 s in the app once App Nap was held off
+(`clanker/macos/app-nap-throttles-background-work.md`). zstd is not worth
+offering: it saves about 30 s per stop over lzma, syncs slower than zlib
+(MAME compresses it at a high level) and needs chdman/MAME 0.247 or later.

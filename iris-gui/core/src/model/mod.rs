@@ -7,6 +7,7 @@
 pub mod i18n;
 
 pub mod camera_test;
+pub mod chd_convert;
 pub mod capture_access;
 pub mod disk_browser;
 pub mod disk_probe;
