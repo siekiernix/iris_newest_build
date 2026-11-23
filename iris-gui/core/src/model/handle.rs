@@ -66,6 +66,10 @@ pub enum Evt {
     StateRestored(String),
     Screenshot(PathBuf),
     Error(String),
+    /// A CD-ROM's disc changed: `path` is the new disc, `None` an empty tray.
+    Disc { id: u8, path: Option<String>, message: String },
+    /// Something worth telling that is not a failure.
+    Notice(String),
     Status(Status),
     /// Per-disk progress of a `SyncDisks` run: `disk` of `total` disks, the
     /// current disk `fraction` (0.0..=1.0) through its rebuild.
@@ -903,13 +907,13 @@ fn worker_loop(
                                     .file_name()
                                     .map(|n| n.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| loaded_path.clone());
-                                let msg = if remount {
+                                let message = if remount {
                                     m.remount_cdrom_guest(id);
                                     t!("emu-disc-loaded-remount", id = id, file = &filename)
                                 } else {
                                     t!("emu-disc-loaded", id = id, file = &filename)
                                 };
-                                let _ = evt_tx.send(Evt::Error(msg));
+                                let _ = evt_tx.send(Evt::Disc { id, path: Some(loaded_path), message });
                             }
                             Err(e) => {
                                 let _ = evt_tx.send(Evt::Error(t!("emu-scsi-error", id = id, error = e.to_string())));
@@ -924,7 +928,7 @@ fn worker_loop(
                     Some(m) => {
                         match m.disc_changer().ok_or_else(no_cdrom).and_then(|d| d.eject_to_empty(id as usize)) {
                             Ok(()) => {
-                                let _ = evt_tx.send(Evt::Error(t!("emu-disc-ejected", id = id)));
+                                let _ = evt_tx.send(Evt::Disc { id, path: None, message: t!("emu-disc-ejected", id = id) });
                             }
                             Err(e) => {
                                 let _ = evt_tx.send(Evt::Error(t!("emu-scsi-error", id = id, error = e.to_string())));
@@ -938,7 +942,7 @@ fn worker_loop(
                 match machine.as_ref() {
                     Some(m) => {
                         m.remount_cdrom_guest(id);
-                        let _ = evt_tx.send(Evt::Error(t!("emu-remount-sent", id = id)));
+                        let _ = evt_tx.send(Evt::Notice(t!("emu-remount-sent", id = id)));
                     }
                     None => { let _ = evt_tx.send(Evt::Error(t!("emu-not-running"))); }
                 }

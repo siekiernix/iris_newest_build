@@ -193,7 +193,7 @@ impl AppController {
     }
 
     /// The SCSI id a disc command takes for the CD-ROM at `key`.
-    fn cd_id(&self, key: u8) -> Option<u8> {
+    pub(crate) fn cd_id(&self, key: u8) -> Option<u8> {
         let dev = self.config().scsi.get(&key)?;
         dev.is_cdrom().then(|| dev.placement(key).1)
     }

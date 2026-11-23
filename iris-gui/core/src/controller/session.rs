@@ -211,6 +211,9 @@ pub struct SessionController {
     restore_after_start: Option<String>,
     /// A machine stopped by a power-on preflight answer waits here.
     pub(crate) pending: Pending,
+    /// The disc in each CD-ROM (by SCSI id) since this run changed it: the
+    /// config keeps the disc the machine started with.
+    live_discs: std::collections::HashMap<u8, Option<String>>,
 }
 
 /// What a question the session asked is about.
@@ -259,6 +262,7 @@ impl SessionController {
         Self {
             emu: EmulatorHandle::spawn(notify),
             syncing: None,
+            live_discs: Default::default(),
             follower: None,
             starting: false,
             started: None,
@@ -564,6 +568,15 @@ impl SessionController {
         std::mem::take(&mut self.events)
     }
 
+    /// The disc in the CD-ROM at SCSI id `id` while running: `Some(None)` for
+    /// an empty tray, `None` if this run has not changed it.
+    pub(crate) fn live_disc(&self, id: u8) -> Option<Option<&str>> {
+        if !self.is_running() {
+            return None;
+        }
+        self.live_discs.get(&id).map(|p| p.as_deref())
+    }
+
     // ---- worker events --------------------------------------------------------
 
     /// Drain the worker's events into toasts and session events.
@@ -572,6 +585,7 @@ impl SessionController {
             match evt {
                 Evt::Started => {
                     self.starting = false;
+                    self.live_discs.clear();
                     self.prev_halted = true;
                     self.prev_stopped = false;
                     self.events.push(SessionEvent::Started);
@@ -582,6 +596,7 @@ impl SessionController {
                 }
                 Evt::Stopped => {
                     self.starting = false;
+                    self.live_discs.clear();
                     self.restore_after_start = None;
                     self.events.push(SessionEvent::Stopped);
                     fx.push(Effect::Toast(t!("toast-emulator-stopped")));
@@ -597,6 +612,11 @@ impl SessionController {
                     }
                     fx.push(Effect::Toast(t!("toast-error", error = e)));
                 }
+                Evt::Disc { id, path, message } => {
+                    self.live_discs.insert(id, path);
+                    fx.push(Effect::Toast(message));
+                }
+                Evt::Notice(message) => fx.push(Effect::Toast(message)),
                 Evt::Status(_) => {}
                 Evt::SyncProgress { disk, total, fraction } => {
                     self.syncing = Some(SyncProgress { disk, total, fraction });

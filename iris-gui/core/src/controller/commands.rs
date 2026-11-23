@@ -232,7 +232,14 @@ impl AppController {
         for key in keys {
             let d = &cfg.scsi[&key];
             let name = crate::model::hardware::scsi_name(cfg, key);
-            let file = std::path::Path::new(&d.path).file_name().map(|f| f.to_string_lossy().into_owned());
+            // A running CD-ROM shows the disc in it now, which may not be the
+            // one the machine started with.
+            let live = d.is_cdrom().then(|| self.cd_id(key)).flatten().and_then(|id| self.session().live_disc(id));
+            let path = match live {
+                Some(p) => p.unwrap_or_default(),
+                None => d.path.as_str(),
+            };
+            let file = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned());
             if d.is_cdrom() {
                 let title = match &file {
                     Some(f) => t!("scsi-slot-cdrom", id = name.as_str(), name = f.as_str()),

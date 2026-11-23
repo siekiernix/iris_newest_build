@@ -59,6 +59,8 @@ hashes are given where a change is easiest to understand by reading the commit.
 - IRIS Preview: the library and the machine page show a line drawing of each
   machine's front (Indy, Indigo2, O2, Octane, Fuel, Tezro, Origin and Onyx)
   instead of a generic computer.
+- Inserting or ejecting a disc on a running machine no longer reports itself
+  as an error, and IRIS Preview's Devices menu shows the disc now in the drive.
 
 ### jitv2 flushes
 
