@@ -210,6 +210,7 @@ impl AppController {
                 tb::GAP,
                 tb::DUPLICATE,
                 tb::DELETE,
+                tb::BROWSE_FILES,
                 tb::MACHINE_SETTINGS,
                 tb::POWER_ON,
             ]

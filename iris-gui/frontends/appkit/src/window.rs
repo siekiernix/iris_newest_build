@@ -30,12 +30,18 @@ pub struct MainWindow {
     pane: Retained<NSView>,
     pub display: Retained<crate::display::DisplayView>,
     detached: Option<Retained<NSWindow>>,
+    /// In the main window while the display is in its own window.
+    detached_note: Retained<NSStackView>,
+    _detached_delegate: Retained<DetachedDelegate>,
     _window_delegate: Retained<WindowDelegate>,
     status: Retained<NSTextField>,
     lights: Retained<NSStackView>,
     light_buttons: Vec<Retained<NSButton>>,
     last_lights: Vec<DeviceLight>,
     toast: Retained<NSTextField>,
+    /// While disks synchronize (a CHD fold after a stop): how far along.
+    sync_bar: Retained<objc2_app_kit::NSProgressIndicator>,
+    sync_label: Retained<NSTextField>,
     _toolbar_delegate: Retained<toolbar::Delegate>,
     toolbar: Retained<objc2_app_kit::NSToolbar>,
     toolbar_layout: Vec<&'static str>,
@@ -78,6 +84,21 @@ impl MainWindow {
             pin(&v, &pane);
         }
         display.setHidden(true);
+        // While detached: a line saying where the display went, and a button
+        // that brings it back.
+        let note_text = secondary(mtm, &t!("display-detached-note"));
+        let back = crate::ui::button(mtm, &t!("tb-attach"), ids::toolbar::DETACH_DISPLAY);
+        let detached_note = NSStackView::stackViewWithViews(
+            &NSArray::from_retained_slice(&[as_view(&note_text), Retained::into_super(Retained::into_super(back))]),
+            mtm,
+        );
+        detached_note.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        detached_note.setSpacing(12.0);
+        detached_note.setTranslatesAutoresizingMaskIntoConstraints(false);
+        detached_note.setHidden(true);
+        pane.addSubview(&detached_note);
+        detached_note.centerXAnchor().constraintEqualToAnchor(&pane.centerXAnchor()).setActive(true);
+        detached_note.centerYAnchor().constraintEqualToAnchor(&pane.centerYAnchor()).setActive(true);
         split.addSubview(&library.scroll);
         split.addSubview(&pane);
         split.setHoldingPriority_forSubviewAtIndex(260.0, 0);
@@ -88,6 +109,17 @@ impl MainWindow {
         let toast = secondary(mtm, "");
         toast.setFont(Some(&NSFont::systemFontOfSize(12.0)));
         set_id(&toast, ids::status::TOAST);
+        let sync_bar = objc2_app_kit::NSProgressIndicator::new(mtm);
+        sync_bar.setStyle(objc2_app_kit::NSProgressIndicatorStyle::Bar);
+        sync_bar.setIndeterminate(false);
+        sync_bar.setMinValue(0.0);
+        sync_bar.setMaxValue(100.0);
+        sync_bar.setControlSize(objc2_app_kit::NSControlSize::Small);
+        sync_bar.widthAnchor().constraintEqualToConstant(160.0).setActive(true);
+        sync_bar.setHidden(true);
+        let sync_label = secondary(mtm, "");
+        sync_label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(12.0, 0.0)));
+        sync_label.setHidden(true);
         let lights = NSStackView::new(mtm);
         lights.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
         lights.setSpacing(6.0);
@@ -97,6 +129,8 @@ impl MainWindow {
             &NSArray::from_retained_slice(&[
                 as_view(&status),
                 as_view(&toast),
+                Retained::into_super(sync_bar.clone()),
+                as_view(&sync_label),
                 spacer,
                 Retained::into_super(lights.clone()),
             ]),
@@ -133,12 +167,16 @@ impl MainWindow {
             pane,
             display,
             detached: None,
+            detached_note,
+            _detached_delegate: DetachedDelegate::new(mtm),
             _window_delegate: window_delegate,
             status,
             lights,
             light_buttons: Vec::new(),
             last_lights: Vec::new(),
             toast,
+            sync_bar,
+            sync_label,
             _toolbar_delegate: delegate,
             toolbar: tb.clone(),
             toolbar_layout: Vec::new(),
@@ -156,28 +194,45 @@ impl MainWindow {
         let display_view: &NSView = &self.display;
         // Detached: the display moves to a window of its own.
         if running && d.detached() && self.detached.is_none() {
-            let w = new_display_window(mtm);
+            let name = app.selected().unwrap_or_default().to_string();
+            let w = new_display_window(mtm, &name);
+            w.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*self._detached_delegate)));
             display_view.removeFromSuperview();
+            // A window's content view is sized by the window, not by
+            // constraints: without this it stays zero-sized and shows nothing.
+            display_view.setTranslatesAutoresizingMaskIntoConstraints(true);
+            display_view.setAutoresizingMask(
+                objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
             w.setContentView(Some(display_view));
             w.makeKeyAndOrderFront(None);
+            w.makeFirstResponder(Some(display_view));
             self.detached = Some(w);
         } else if (!running || !d.detached()) && self.detached.is_some() {
             if let Some(w) = self.detached.take() {
+                w.setDelegate(None);
                 display_view.removeFromSuperview();
                 w.orderOut(None);
             }
             display_view.setTranslatesAutoresizingMaskIntoConstraints(false);
             self.pane.addSubview(display_view);
             pin(display_view, &self.pane);
+            if running {
+                self.window.makeKeyAndOrderFront(None);
+                self.window.makeFirstResponder(Some(display_view));
+            }
         }
         let show_display = running && self.detached.is_none();
-        if self.display.isHidden() == show_display {
-            self.display.setHidden(!show_display);
-            self.content.setHidden(show_display);
+        let away = running && self.detached.is_some();
+        // Shown whenever the machine runs, in whichever window holds it.
+        if self.display.isHidden() == running {
+            self.display.setHidden(!running);
             if show_display {
                 self.window.makeFirstResponder(Some(&self.display));
             }
         }
+        self.content.setHidden(show_display || away);
+        self.detached_note.setHidden(!away);
         self.display.set_captured(running && d.captured());
         self.display.set_follow(running && iris_gui_core::controller::display::follows_pointer(app.prefs()));
         let (max, integer) = iris_gui_core::controller::display::scaling(app.prefs(), 1.0);
@@ -273,6 +328,24 @@ impl MainWindow {
         if self.status.stringValue().to_string() != s {
             self.status.setStringValue(&ns(&s));
         }
+        match app.session().syncing() {
+            Some(p) => {
+                let pct = (p.overall() * 100.0).round();
+                self.sync_bar.setHidden(false);
+                self.sync_bar.setDoubleValue(pct as f64);
+                let mut text = format!("{pct:.0}%");
+                if p.total > 1 {
+                    text = format!("{text}  {}", t!("modal-sync-disk", disk = (p.disk + 1).min(p.total), total = p.total));
+                }
+                self.sync_label.setStringValue(&ns(&text));
+                self.sync_label.setHidden(false);
+                self.sync_bar.setToolTip(Some(&ns(&t!("modal-sync-dont-quit"))));
+            }
+            None => {
+                self.sync_bar.setHidden(true);
+                self.sync_label.setHidden(true);
+            }
+        }
         // The lights: one borderless button each, made when the set of
         // lights changes and restyled in place otherwise, so a click is not
         // lost to a refresh. A click runs the command the light stands for
@@ -337,8 +410,11 @@ fn pin(v: &NSView, to: &NSView) {
     v.bottomAnchor().constraintEqualToAnchor(&to.bottomAnchor()).setActive(true);
 }
 
-fn new_display_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
-    let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Miniaturizable | NSWindowStyleMask::Resizable;
+fn new_display_window(mtm: MainThreadMarker, name: &str) -> Retained<NSWindow> {
+    let style = NSWindowStyleMask::Titled
+        | NSWindowStyleMask::Closable
+        | NSWindowStyleMask::Miniaturizable
+        | NSWindowStyleMask::Resizable;
     // SAFETY: a standard window, kept by the main window while detached.
     let w = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -351,7 +427,8 @@ fn new_display_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     };
     // SAFETY: the main window keeps it.
     unsafe { w.setReleasedWhenClosed(false) };
-    w.setTitle(&ns(&t!("tb-detach")));
+    w.setTitle(&ns(name));
+    w.setFrameAutosaveName(&ns("IRISDisplayWindow"));
     w.setAcceptsMouseMovedEvents(true);
     w
 }
@@ -392,6 +469,56 @@ define_class!(
 impl WindowDelegate {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc::<WindowDelegate>().set_ivars(());
+        // SAFETY: NSObject's plain init.
+        unsafe { objc2::msg_send![super(this), init] }
+    }
+}
+
+define_class!(
+    /// The detached display window's delegate: focus and full screen as the
+    /// main window's, and closing it puts the display back.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "IRISDetachedDelegate"]
+    pub struct DetachedDelegate;
+
+    unsafe impl NSObjectProtocol for DetachedDelegate {}
+
+    unsafe impl NSWindowDelegate for DetachedDelegate {
+        #[unsafe(method(windowShouldClose:))]
+        fn should_close(&self, _w: &NSWindow) -> bool {
+            // After this handler: putting the display back closes the window.
+            crate::app::later(Box::new(|| {
+                crate::app::display(iris_gui_core::controller::display::DisplayAction::ToggleDetached)
+            }));
+            false
+        }
+
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn became_key(&self, _n: &objc2_foundation::NSNotification) {
+            crate::app::display(iris_gui_core::controller::display::DisplayAction::Focus(true));
+        }
+
+        #[unsafe(method(windowDidResignKey:))]
+        fn resigned_key(&self, _n: &objc2_foundation::NSNotification) {
+            crate::app::display(iris_gui_core::controller::display::DisplayAction::Focus(false));
+        }
+
+        #[unsafe(method(windowDidEnterFullScreen:))]
+        fn entered_full(&self, _n: &objc2_foundation::NSNotification) {
+            crate::app::display(iris_gui_core::controller::display::DisplayAction::FullScreenChanged(true));
+        }
+
+        #[unsafe(method(windowDidExitFullScreen:))]
+        fn exited_full(&self, _n: &objc2_foundation::NSNotification) {
+            crate::app::display(iris_gui_core::controller::display::DisplayAction::FullScreenChanged(false));
+        }
+    }
+);
+
+impl DetachedDelegate {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<DetachedDelegate>().set_ivars(());
         // SAFETY: NSObject's plain init.
         unsafe { objc2::msg_send![super(this), init] }
     }

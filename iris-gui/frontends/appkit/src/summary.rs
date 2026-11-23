@@ -188,7 +188,11 @@ fn details(mtm: MainThreadMarker, o: &Overview) -> Vec<Retained<NSView>> {
                 | iris_gui_core::controller::session::LightTarget::CdRom { key },
             ) = &r.target
             {
-                parts.push(view(&icon_button(mtm, &t!("ov-browse"), &item::id(item::BROWSE_DISK, key), Icon::BrowseFiles)));
+                // Titled: a folder alone reads as "choose another image".
+                let b = icon_button(mtm, &t!("ov-browse"), &item::id(item::BROWSE_DISK, key), Icon::BrowseFiles);
+                b.setTitle(&ns(&t!("ov-browse")));
+                b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
+                parts.push(view(&b));
             }
         }
         let line = stack(mtm, &parts, false, 8.0);
