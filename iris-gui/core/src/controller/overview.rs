@@ -88,7 +88,7 @@ impl AppController {
             },
         ];
         let dir = self.machine_dir();
-        let missing = summary::missing_disks(cfg, crate::model::machines::readable);
+        let missing = summary::missing_disks(cfg, |p| self.disk_readable(dir.as_deref(), p));
         for d in summary::drives(cfg) {
             let shown = |p: &str| {
                 let file = summary::shown_path(p, dir.as_deref());

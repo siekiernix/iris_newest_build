@@ -297,6 +297,12 @@ fn any_file() -> PickKind {
 impl SettingsController {
     /// The sections for `cfg`. `running` disables what only applies at power on.
     pub fn sections(&self, cfg: &MachineConfig, running: bool) -> Vec<Section> {
+        self.sections_with(cfg, running, &|p| crate::model::machines::readable(p))
+    }
+
+    /// The sections, asking `readable` whether each disk image can be read
+    /// (the app passes its non-blocking probe).
+    pub fn sections_with(&self, cfg: &MachineConfig, running: bool, readable: &dyn Fn(&str) -> bool) -> Vec<Section> {
         let p = cfg.machine.profile;
         let t = traits(p);
         let at_power_on = || Enabled::when(!running, || t!("settings-next-power-on"));
@@ -467,7 +473,7 @@ impl SettingsController {
                     path: d.path.clone(),
                     overlay: d.overlay,
                     scratch: d.scratch,
-                    problem: (d.kind() == ScsiKind::Disk && !d.scratch && !crate::model::machines::readable(&d.path))
+                    problem: (d.kind() == ScsiKind::Disk && !d.scratch && !readable(&d.path))
                         .then(|| t!("settings-disk-missing")),
                 })
                 .collect();

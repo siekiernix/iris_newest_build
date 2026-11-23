@@ -138,6 +138,8 @@ pub struct AppController {
     camera: super::camera::CameraTestController,
     /// The disk browser, while its window is open.
     browser: Option<super::disk_browser::DiskBrowserController>,
+    /// Disk images' readability, checked off the UI thread.
+    pub(crate) probe: crate::model::disk_probe::DiskProbe,
     notify: Arc<dyn Notify>,
     /// Problems found the last time the library was checked, by machine.
     problems: std::collections::BTreeMap<String, String>,
@@ -222,6 +224,7 @@ impl AppController {
             network: super::network::NetworkController::new(),
             camera: Default::default(),
             browser: None,
+            probe: crate::model::disk_probe::DiskProbe::new(notify.clone()),
             notify,
             problems: Default::default(),
             pending_machine: None,
@@ -292,7 +295,20 @@ impl AppController {
 
     /// The selected machine's settings, as sections of fields.
     pub fn settings_sections(&self) -> Vec<super::settings::Section> {
-        self.settings.sections(&self.cfg, self.session.is_running())
+        let dir = self.machine_dir();
+        let readable = |p: &str| self.disk_readable(dir.as_deref(), p);
+        self.settings.sections_with(&self.cfg, self.session.is_running(), &readable)
+    }
+
+    /// Whether a disk image path (relative to the machine folder) was readable
+    /// when last checked; never blocks (see `model::disk_probe`).
+    pub(crate) fn disk_readable(&self, dir: Option<&std::path::Path>, path: &str) -> bool {
+        match dir {
+            Some(d) if !path.is_empty() && !iris::http_disk::is_url(path) => {
+                self.probe.readable(&machines::resolve(d, path).to_string_lossy())
+            }
+            _ => self.probe.readable(path),
+        }
     }
 
     pub fn display(&self) -> &super::display::DisplayController {
