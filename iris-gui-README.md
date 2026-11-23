@@ -303,10 +303,11 @@ PCAP-mode NFS IP).
 
 ### Native macOS preview
 
-`IRIS Preview.app` is a second macOS front end, written with AppKit instead
-of egui, that shares the same machines, settings and preferences (it reads
-and writes the same folders). It is a preview: use one or the other at a
-time, since only one machine runs at once. It has the library, the summary
+`IRIS Preview.app` is the macOS front end, written with AppKit instead of
+egui. It is what the macOS packages ship (the dmg and zip of each release and
+nightly); the egui IRIS.app still builds from source on macOS
+(`scripts/dist/macos-bundle.sh`) and shares the same machines, settings and
+preferences, so use one or the other at a time. It has the library, the summary
 page, the guest display (Metal), the machine settings, the new-machine
 window, saved states, the serial console, Check Networking, the benchmark,
 the camera test and Preferences, with SF Symbols and the system's light and
@@ -314,7 +315,7 @@ dark appearance. The machine settings include Video In (the Indy's camera)
 and Performance (thread pinning, the JIT, the VNC server).
 
 The toolbar follows the machine: a stopped machine offers New, Duplicate,
-Delete, Settings and Start; a running one Shut Down (asks IRIX to shut down
+Delete, Browse Files, Settings and Start; a running one Shut Down (asks IRIX to shut down
 cleanly), Restart and Power Off on the left, and Save State, Screenshot,
 Discs, Capture, Full Screen, Detach and the serial console on the right. A
 stopped machine's page shows its last screen with a large Start button, then
@@ -322,7 +323,7 @@ stopped machine's page shows its last screen with a large Start button, then
 saved states, each with the screen it was saved at. Each library row has its
 own Start button.
 
-It also has a **disk browser**: the folder button next to a disk on the
+It also has a **disk browser**: the Browse Files button next to a disk on the
 summary page, Browse Files in the toolbar, or a click on a disk's status
 light opens the disk of a stopped machine. It shows the partitions and their
 files, exports files, folders and `.tar`/`.tar.gz` archives, imports files

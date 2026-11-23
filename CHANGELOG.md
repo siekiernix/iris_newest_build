@@ -59,6 +59,9 @@ hashes are given where a change is easiest to understand by reading the commit.
 - IRIS Preview: the library and the machine page show a line drawing of each
   machine's front (Indy, Indigo2, O2, Octane, Fuel, Tezro, Origin and Onyx)
   instead of a generic computer.
+- The macOS downloads (release and nightly dmg and zip) are now the native
+  AppKit app, IRIS Preview, instead of the egui IRIS.app. The command-line
+  tarball is unchanged.
 - IRIS Preview points out CHD disks whose compression makes every stop slow
   and converts them to zlib or uncompressed, which stops much faster. It asks
   once when such a disk is attached; Keep As Is stops the suggestion.

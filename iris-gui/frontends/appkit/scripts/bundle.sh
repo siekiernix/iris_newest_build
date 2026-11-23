@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Build iris-appkit and wrap it in "IRIS Preview.app", the native macOS shell,
-# beside the egui IRIS.app with a bundle id of its own. Optionally sign with a
-# Developer ID, notarize, and make a DMG.
+# Build iris-appkit and wrap it in "IRIS Preview.app", the native macOS shell
+# (bundle id io.techomancer.iris.appkit). Optionally sign with a Developer ID,
+# notarize, and make a DMG. The release packager, scripts/dist/package-macos.sh,
+# calls this with --binary to wrap the universal binary CI built.
 #
 #   iris-gui/frontends/appkit/scripts/bundle.sh [options]
 #
@@ -10,6 +11,7 @@
 #                      (default: bundled,lightning,jitv2,idle-pause,hostgl)
 #   --version V        CFBundleShortVersionString (default: dev.<commit>)
 #   --arch A           universal (default), arm64, x86_64
+#   --binary PATH      wrap this iris-appkit instead of building one
 #   --out DIR          where the .app (and .dmg) go (default: dist/)
 #   --bundle-id ID     CFBundleIdentifier (default: io.techomancer.iris.appkit)
 #   --sign IDENTITY    codesign identity; "-" (the default) signs ad hoc.
@@ -30,12 +32,14 @@ IDENTITY="${CODESIGN_IDENTITY:--}"
 DMG=0
 NOTARIZE=0
 NAME="IRIS Preview"
+PREBUILT=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --features)  FEATURES="$2"; shift 2 ;;
         --version)   VERSION="$2"; shift 2 ;;
         --arch)      ARCH_SEL="$2"; shift 2 ;;
+        --binary)    PREBUILT="$2"; shift 2 ;;
         --out)       OUT_DIR="$2"; shift 2 ;;
         --bundle-id) BUNDLE_ID="$2"; shift 2 ;;
         --sign)      IDENTITY="$2"; shift 2 ;;
@@ -63,19 +67,24 @@ esac
 # ── Build ────────────────────────────────────────────────────────────────────
 WORK=$(stage_dir)
 trap 'rm -rf "$WORK"' EXIT
-slices=()
-for t in "${TARGETS[@]}"; do
-    ensure_target "$t"
-    group_start "cargo build iris-gui-appkit ($t) features=$FEATURES"
-    cargo build --release --target "$t" -p iris-gui-appkit --features "$FEATURES"
-    group_end
-    slices+=("$(release_dir "$t")/iris-appkit")
-done
 BINARY="$WORK/iris-appkit"
-if [ "${#slices[@]}" -gt 1 ]; then
-    lipo -create -output "$BINARY" "${slices[@]}"
+if [ -n "$PREBUILT" ]; then
+    [ -x "$PREBUILT" ] || die "--binary $PREBUILT is not an executable"
+    cp "$PREBUILT" "$BINARY"
 else
-    cp "${slices[0]}" "$BINARY"
+    slices=()
+    for t in "${TARGETS[@]}"; do
+        ensure_target "$t"
+        group_start "cargo build iris-gui-appkit ($t) features=$FEATURES"
+        cargo build --release --target "$t" -p iris-gui-appkit --features "$FEATURES"
+        group_end
+        slices+=("$(release_dir "$t")/iris-appkit")
+    done
+    if [ "${#slices[@]}" -gt 1 ]; then
+        lipo -create -output "$BINARY" "${slices[@]}"
+    else
+        cp "${slices[0]}" "$BINARY"
+    fi
 fi
 lipo -info "$BINARY" >&2
 

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Build and package IRIS for macOS as universal (arm64 + x86_64) binaries:
-# IRIS.app as a .dmg and a .zip, plus the CLI tarball holding iris and iris-ci.
+# the native AppKit app, "IRIS Preview.app" (iris-gui/frontends/appkit), as a
+# .dmg and a .zip, plus the CLI tarball holding iris and iris-ci. The egui
+# IRIS.app is no longer packaged for macOS (scripts/dist/macos-bundle.sh still
+# builds it by hand).
 #
 #   scripts/dist/package-macos.sh [options]
 #
@@ -17,7 +20,7 @@
 # Set REQUIRE_NOTARIZATION=1 to fail instead of shipping unnotarized files.
 #
 # CI builds each architecture on its own runner: `--build-only --target T`
-# builds T's iris-gui, iris and iris-ci into target/T/release and stops; the
+# builds T's iris-appkit, iris and iris-ci into target/T/release and stops; the
 # packaging run then gets both slices there and runs with --skip-build.
 source "$(dirname "$0")/lib.sh"
 
@@ -36,9 +39,9 @@ esac
 if [ "$BUILD_ONLY" = 1 ]; then
     [ "$SKIP_BUILD" = 1 ] && die "--build-only and --skip-build are opposites"
     # The same features the bundle and the CLI steps below build with.
-    build_gui "$TARGET" "$(with_bundled "$GUI_FEATURES")"
+    build_appkit "$TARGET" "$(with_bundled "$GUI_FEATURES")"
     build_cli "$TARGET" "$CLI_FEATURES"
-    ls -l "$(release_dir "$TARGET")"/{iris-gui,iris,iris-ci} >&2
+    ls -l "$(release_dir "$TARGET")"/{iris-appkit,iris,iris-ci} >&2
     exit 0
 fi
 need lipo codesign hdiutil ditto
@@ -98,12 +101,12 @@ trap 'rm -rf "$WORK"' EXIT
 # ── GUI ──────────────────────────────────────────────────────────────────────
 BUNDLE_ARGS=(--features "$(with_bundled "$GUI_FEATURES")" --version "$VERSION" --out "$WORK" --sign "$IDENTITY")
 if [ "$SKIP_BUILD" = 1 ]; then
-    lipo -create -output "$WORK/iris-gui" \
-        "$(release_dir aarch64-apple-darwin)/iris-gui" "$(release_dir x86_64-apple-darwin)/iris-gui"
-    BUNDLE_ARGS+=(--binary "$WORK/iris-gui")
+    lipo -create -output "$WORK/iris-appkit" \
+        "$(release_dir aarch64-apple-darwin)/iris-appkit" "$(release_dir x86_64-apple-darwin)/iris-appkit"
+    BUNDLE_ARGS+=(--binary "$WORK/iris-appkit")
 fi
-"$DIST_ROOT/scripts/dist/macos-bundle.sh" "${BUNDLE_ARGS[@]}"
-APP="$WORK/IRIS.app"
+"$DIST_ROOT/iris-gui/frontends/appkit/scripts/bundle.sh" "${BUNDLE_ARGS[@]}"
+APP="$WORK/IRIS Preview.app"
 
 if [ "${#NOTARY[@]}" -gt 0 ]; then
     ditto -c -k --keepParent "$APP" "$WORK/IRIS-notarize.zip"

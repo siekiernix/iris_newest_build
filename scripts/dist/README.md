@@ -8,8 +8,9 @@ a local run with the same options produces the same files. Output goes to
 | Script | Makes |
 |---|---|
 | `package-windows.sh` | Inno Setup installer, portable zip, CLI zip (run from Git Bash) |
-| `package-macos.sh` | universal `IRIS.app` as dmg and zip, universal CLI tarball; signs and notarizes when credentials are set |
-| `macos-bundle.sh` | just `IRIS.app`: builds iris-gui, adds Info.plist and icon, signs |
+| `package-macos.sh` | universal `IRIS Preview.app` (the AppKit app) as dmg and zip, universal CLI tarball; signs and notarizes when credentials are set |
+| `macos-bundle.sh` | just the egui `IRIS.app`, which macOS packages no longer ship: builds iris-gui, adds Info.plist and icon, signs |
+| `iris-gui/frontends/appkit/scripts/bundle.sh` | just `IRIS Preview.app`: builds iris-appkit (or wraps `--binary`), adds Info.plist and icon, signs |
 | `package-linux.sh` | deb, rpm, Arch pkg, optional GUI tarball, CLI tarball |
 | `appimage.sh` | AppImage (in the Arch container CI uses) |
 | `version.sh` | the version string: `nightly.YYYY.MM.DD`, `X.Y.Z`, or `dev.<commit>` |

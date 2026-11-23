@@ -122,6 +122,14 @@ build_gui() {  # <target> <features>
     group_end
 }
 
+build_appkit() {  # <target> <features>: the macOS app
+    [ "$SKIP_BUILD" = 1 ] && return 0
+    ensure_target "$1"
+    group_start "cargo build iris-gui-appkit ($1) features=$2"
+    cargo build --release --target "$1" -p iris-gui-appkit --features "$2"
+    group_end
+}
+
 build_cli() {  # <target> <features>
     [ "$SKIP_BUILD" = 1 ] && return 0
     ensure_target "$1"
