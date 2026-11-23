@@ -77,6 +77,8 @@ pub enum BrowserAction {
     Drop { paths: Vec<PathBuf>, into: Option<usize> },
     /// Copy a `.tardist` or tar in as one file instead of unpacking it.
     SetUnpackArchives(bool),
+    /// Convert imported text files' line endings to Unix (LF), for IRIX.
+    SetUnixLineEndings(bool),
     EditText,
     /// The editor's text changed.
     EditorChanged(String),
@@ -91,6 +93,8 @@ pub enum BrowserAction {
     Check,
     /// Edit a filesystem whose check failed anyway.
     EditAnyway,
+    /// Replay an XFS log IRIX left unreplayed, as a mount would.
+    ReplayLog,
     Cancel,
     Answer(Answer),
 }
@@ -127,8 +131,10 @@ pub mod ids {
     pub const EDIT: &str = "browser.edit";
     pub const CHECK: &str = "browser.check";
     pub const EDIT_ANYWAY: &str = "browser.edit-anyway-button";
+    pub const REPLAY_LOG: &str = "browser.replay-log-button";
     pub const CANCEL: &str = "browser.cancel";
     pub const UNPACK: &str = "browser.unpack";
+    pub const UNIX_LINE_ENDINGS: &str = "browser.unix-line-endings";
     pub const EDITOR_SAVE: &str = "browser.editor-save";
     pub const EDITOR_CLOSE: &str = "browser.editor-close";
     pub const EDITOR_TEXT: &str = "browser.editor-text";
@@ -199,8 +205,10 @@ pub fn action_for(id: &str, value: bool) -> Option<BrowserAction> {
     }
     Some(match id {
         ids::EDIT_ANYWAY => BrowserAction::EditAnyway,
+        ids::REPLAY_LOG => BrowserAction::ReplayLog,
         ids::CANCEL => BrowserAction::Cancel,
         ids::UNPACK => BrowserAction::SetUnpackArchives(value),
+        ids::UNIX_LINE_ENDINGS => BrowserAction::SetUnixLineEndings(value),
         ids::EDITOR_SAVE => BrowserAction::EditorSave,
         ids::EDITOR_CLOSE => BrowserAction::EditorClose,
         _ => return None,
@@ -218,6 +226,7 @@ const P_RENAME: &str = "browser.rename";
 const P_NEW_FOLDER: &str = "browser.new-folder";
 const P_DELETE: &str = "browser.delete";
 const P_EDIT_ANYWAY: &str = "browser.edit-anyway";
+const P_REPLAY: &str = "browser.replay-log";
 
 type Shared = Arc<Mutex<Option<OpenFs>>>;
 
@@ -229,7 +238,9 @@ const S_IFDIR: u32 = 0o040000;
 
 /// What a finished job hands back.
 enum Done {
-    Opened { names: Names, check: Option<String> },
+    Opened { names: Names, check: Option<String>, log: Option<model::XfsLog> },
+    /// The XFS log was replayed: transactions applied.
+    Replayed(usize),
     Listed(Vec<FileEntry>),
     Exported(u64),
     Imported(u64),
@@ -253,7 +264,11 @@ pub struct DiskBrowserController {
     names: Names,
     /// The open filesystem's check failed and the user has not said go on.
     check_failed: Option<String>,
+    /// The open XFS volume's log, when it is one.
+    xfs_log: Option<model::XfsLog>,
     unpack_archives: bool,
+    /// Imported text files get Unix line endings.
+    unix_line_endings: bool,
     editor: Option<(Editor, FileEntry)>,
     job: Option<(Job<Done>, bool)>,
     pending_import: Vec<PathBuf>,
@@ -329,7 +344,9 @@ impl DiskBrowserController {
             selection: Vec::new(),
             names: Names::default(),
             check_failed: None,
+            xfs_log: None,
             unpack_archives: true,
+            unix_line_endings: false,
             editor: None,
             job: None,
             pending_import: Vec::new(),
@@ -448,6 +465,10 @@ impl DiskBrowserController {
         self.unpack_archives
     }
 
+    pub fn unix_line_endings(&self) -> bool {
+        self.unix_line_endings
+    }
+
     /// Whether `action` can run now, and if not why.
     pub fn enabled(&self, action: &BrowserAction) -> Enabled {
         let busy = self.job.as_ref().is_some_and(|(j, _)| j.is_running());
@@ -507,6 +528,12 @@ impl DiskBrowserController {
                 None => Enabled::No(String::new()),
             },
             BrowserAction::EditAnyway => Enabled::when(self.check_failed.is_some(), String::new),
+            // A CD-ROM or a running machine: the controller's own reason.
+            BrowserAction::ReplayLog => match (&self.read_only, &self.xfs_log) {
+                (Some(r), _) => Enabled::No(r.clone()),
+                (None, Some(model::XfsLog::Replayable { .. })) => Enabled::Yes,
+                (None, _) => Enabled::No(String::new()),
+            },
             BrowserAction::Cancel => Enabled::when(busy, String::new),
             BrowserAction::SelectPartition(_)
             | BrowserAction::Activate(_)
@@ -515,6 +542,7 @@ impl DiskBrowserController {
             | BrowserAction::Refresh
             | BrowserAction::Select(_)
             | BrowserAction::SetUnpackArchives(_)
+            | BrowserAction::SetUnixLineEndings(_)
             | BrowserAction::EditorChanged(_)
             | BrowserAction::EditorClose
             | BrowserAction::Check
@@ -543,6 +571,20 @@ impl DiskBrowserController {
         self.job = Some((job, writes));
     }
 
+    /// Replay the selected XFS volume's log, then reopen it.
+    fn replay_log(&mut self) {
+        let Some(p) = self.selected_part.and_then(|i| self.parts.get(i).cloned()) else { return };
+        self.close_fs();
+        let Ok(mut io) = self.image() else {
+            self.error = Some(t!("browser-open-failed", error = "image"));
+            return;
+        };
+        let job = Job::spawn(t!("browser-replaying"), false, self.notify.clone(), move |_| {
+            model::replay_xfs_log(&mut io, p.offset).map(Done::Replayed)
+        });
+        self.job = Some((job, true));
+    }
+
     fn select_partition(&mut self, i: usize) {
         let Some(p) = self.parts.get(i).cloned() else { return };
         if p.why_not.is_some() {
@@ -554,7 +596,8 @@ impl DiskBrowserController {
         self.entries.clear();
         self.selection.clear();
         self.check_failed = None;
-        let (Some(header), Ok(io)) = (self.header.clone(), self.image()) else {
+        self.xfs_log = None;
+        let (Some(header), Ok(mut io)) = (self.header.clone(), self.image()) else {
             self.error = Some(t!("browser-open-failed", error = "image"));
             return;
         };
@@ -563,6 +606,14 @@ impl DiskBrowserController {
         // Opening reads the superblock and, for an editable volume, checks it:
         // a job, like everything that touches the image.
         let job = Job::spawn(t!("browser-opening"), true, self.notify.clone(), move |ctx| {
+            // XFS: edits over a log IRIX has yet to replay would be undone by
+            // that replay, so a volume not cleanly unmounted opens read-only.
+            let log = (p.kind == PartKind::Xfs).then(|| model::xfs_log(&mut io, p.offset)).transpose()?;
+            let read_only = read_only.or_else(|| match &log {
+                Some(model::XfsLog::Replayable { transactions }) => Some(t!("browser-xfs-dirty", count = *transactions)),
+                Some(model::XfsLog::Unrecoverable(why)) => Some(t!("browser-xfs-unrecoverable", reason = why.as_str())),
+                _ => None,
+            });
             let mut open = model::open_partition(io, &header, &p, read_only)?;
             ctx.phase(t!("browser-reading-names"));
             let names = Names::read(open.fs());
@@ -574,15 +625,9 @@ impl DiskBrowserController {
                         check = Some(t!("browser-check-failed-ro", count = r.errors.len()));
                     }
                 }
-                // fs-xfs 0.2 cannot tell whether the log was replayed. Editing
-                // over an unreplayed log can be undone when IRIX replays it,
-                // so XFS waits for the user's say-so.
-                if check.is_none() && p.kind == PartKind::Xfs {
-                    check = Some(t!("browser-xfs-log-unknown"));
-                }
             }
             *fs.lock().map_err(|_| "lock")? = Some(open);
-            Ok(Done::Opened { names, check })
+            Ok(Done::Opened { names, check, log })
         });
         self.job = Some((job, false));
     }
@@ -688,6 +733,7 @@ impl DiskBrowserController {
                 fx.push(self.import_question(paths, dest));
             }
             BrowserAction::SetUnpackArchives(on) => self.unpack_archives = on,
+            BrowserAction::SetUnixLineEndings(on) => self.unix_line_endings = on,
             BrowserAction::EditText => {
                 let Some(e) = self.selected().into_iter().next() else { return fx };
                 self.run(t!("browser-reading"), false, move |fs, _| {
@@ -805,6 +851,19 @@ impl DiskBrowserController {
                 confirm_label: t!("browser-edit-anyway-ok"),
                 destructive: true,
             })),
+            BrowserAction::ReplayLog => {
+                let n = match &self.xfs_log {
+                    Some(model::XfsLog::Replayable { transactions }) => *transactions,
+                    _ => 0,
+                };
+                fx.push(Effect::Confirm(ConfirmSpec {
+                    purpose: P_REPLAY,
+                    title: t!("browser-replay-title"),
+                    message: t!("browser-replay-body", count = n),
+                    confirm_label: t!("browser-replay-ok"),
+                    destructive: false,
+                }));
+            }
             BrowserAction::Cancel => {
                 if let Some((j, _)) = &self.job {
                     j.cancel();
@@ -860,6 +919,7 @@ impl DiskBrowserController {
         let paths = std::mem::take(&mut self.pending_import);
         let Some(dest) = self.import_into.take().or_else(|| self.here()) else { return };
         let unpack = self.unpack_archives;
+        let endings = if self.unix_line_endings { rb_fsimporter::LineEndings::Unix } else { rb_fsimporter::LineEndings::Keep };
         // New files take the destination folder's owner and group.
         let (uid, gid) = (dest.uid, dest.gid);
         self.run(t!("browser-importing"), true, move |fs, ctx| {
@@ -886,7 +946,7 @@ impl DiskBrowserController {
                             .create_directory(&dest, &name, &CreateDirectoryOptions { mode: Some(S_IFDIR | 0o755), uid, gid, ..Default::default() })
                             .map_err(|e| e.to_string())?,
                     };
-                    let opts = dir_options(unpack, replace);
+                    let opts = dir_options(unpack, replace, endings);
                     struct H<'a>(&'a crate::model::job::JobCtx<Done>, u64, u64);
                     impl rb_fsimporter::Host for H<'_> {
                         fn cancelled(&self) -> bool {
@@ -913,11 +973,25 @@ impl DiskBrowserController {
                         efs.delete_recursive(&dest, &e).map_err(|e| e.to_string())?;
                     }
                     let mode = host_mode(p);
-                    let len = std::fs::metadata(p).map(|m| m.len()).map_err(|e| e.to_string())?;
-                    let mut f = std::fs::File::open(p).map_err(|e| e.to_string())?;
-                    efs.create_file(&dest, &name, &mut f, len, &CreateFileOptions { mode: Some(S_IFREG | mode.unwrap_or(0o644)), uid, gid, ..Default::default() })
-                        .map_err(|e| e.to_string())?;
-                    done += len;
+                    let raw = std::fs::metadata(p).map(|m| m.len()).map_err(|e| e.to_string())?;
+                    let opts = CreateFileOptions { mode: Some(S_IFREG | mode.unwrap_or(0o644)), uid, gid, ..Default::default() };
+                    // Text files, when asked, get Unix line endings on the way
+                    // in; the crates decide what counts as text (never an archive).
+                    let (len, convert) = if endings == rb_fsimporter::LineEndings::Keep {
+                        (raw, false)
+                    } else {
+                        let mut f = std::fs::File::open(p).map_err(|e| e.to_string())?;
+                        fs_tar::line_endings::imported_len(endings, &name, &mut f).map_err(|e| e.to_string())?
+                    };
+                    let f = std::fs::File::open(p).map_err(|e| e.to_string())?;
+                    if convert {
+                        let mut r = fs_tar::line_endings::LineEndingReader::new(f, endings);
+                        efs.create_file(&dest, &name, &mut r, len, &opts).map_err(|e| e.to_string())?;
+                    } else {
+                        let mut f = f;
+                        efs.create_file(&dest, &name, &mut f, len, &opts).map_err(|e| e.to_string())?;
+                    }
+                    done += raw;
                     ctx.progress(Progress::Determinate { done, total, unit: Unit::Bytes });
                 }
             }
@@ -1096,6 +1170,7 @@ impl DiskBrowserController {
                 });
             }
             Answer::Confirmed { purpose: P_EDIT_ANYWAY, yes: true } => self.check_failed = None,
+            Answer::Confirmed { purpose: P_REPLAY, yes: true } => self.replay_log(),
             // Cancelled prompts, and answers that are not this window's.
             Answer::Text { .. } | Answer::Confirmed { .. } | Answer::Picked { .. } | Answer::Chose { .. } => {}
         }
@@ -1107,7 +1182,8 @@ impl DiskBrowserController {
         let Some(outcome) = self.job.as_ref().and_then(|(j, _)| j.outcome()) else { return fx };
         let wrote = self.job.take().map(|(_, w)| w).unwrap_or(false);
         match outcome {
-            Ok(Done::Opened { names, check }) => {
+            Ok(Done::Opened { names, check, log }) => {
+                self.xfs_log = log;
                 self.tried.clear();
                 self.names = names;
                 self.check_failed = check;
@@ -1149,6 +1225,13 @@ impl DiskBrowserController {
                             entry,
                         ));
                     }
+                }
+            }
+            Ok(Done::Replayed(n)) => {
+                fx.push(Effect::Toast(t!("browser-replayed", count = n)));
+                // Open it again: now clean, so editable.
+                if let Some(i) = self.selected_part {
+                    self.select_partition(i);
                 }
             }
             Ok(Done::Edited) => {
@@ -1223,9 +1306,10 @@ fn chown_tree(
     Ok(())
 }
 
-fn dir_options(unpack: bool, replace: bool) -> rb_fsimporter::DirImportOptions {
+fn dir_options(unpack: bool, replace: bool, endings: rb_fsimporter::LineEndings) -> rb_fsimporter::DirImportOptions {
     let mut o = rb_fsimporter::DirImportOptions::default();
     o.expand_archives = unpack;
+    o.shared.line_endings = endings;
     o.shared.apply_permissions = true;
     o.shared.conflict =
         if replace { fs_tar::import_sink::ImportConflict::Overwrite } else { fs_tar::import_sink::ImportConflict::Skip };
@@ -1339,6 +1423,17 @@ mod tests {
         assert!(b.error().is_none(), "{:?}", b.error());
         eprintln!("partitions: {:#?}", b.partitions());
         no_errors(&settle(&mut b));
+        // An XFS volume IRIX did not shut down cleanly: replay its log first,
+        // as the user would with Replay Log; it reopens editable.
+        eprintln!("xfs log on open: {:?}", b.xfs_log);
+        if matches!(b.xfs_log, Some(crate::model::disk_browser::XfsLog::Replayable { .. })) {
+            assert!(b.read_only_reason().is_some(), "a dirty XFS log opens read-only");
+            assert_eq!(b.enabled(&BrowserAction::ReplayLog), Enabled::Yes);
+            no_errors(&answer(&mut b, Answer::Confirmed { purpose: P_REPLAY, yes: true }));
+            settle(&mut b);
+            eprintln!("xfs log after replay: {:?}", b.xfs_log);
+            assert_eq!(b.xfs_log, Some(crate::model::disk_browser::XfsLog::Clean), "the replay left the log clean");
+        }
         // What the disk's own check said before anything was changed.
         let mut before = None;
         if b.check_failed.is_some() {
@@ -1401,8 +1496,16 @@ mod tests {
         std::fs::write(src.join("hello.txt"), "hello from the host\n").unwrap();
         std::fs::write(src.join("sub/data.bin"), vec![7u8; 100_000]).unwrap();
         std::fs::write(host.0.join("single.txt"), "one file\n").unwrap();
-        b.apply(BrowserAction::Answer(Answer::Picked { purpose: P_IMPORT_FOLDER, paths: vec![src.clone(), host.0.join("single.txt")] }));
+        // A DOS text file and a folder file with CRLF: Unix line endings on import.
+        std::fs::write(host.0.join("dos.txt"), "line one\r\nline two\r\n").unwrap();
+        std::fs::write(src.join("crlf.txt"), "a\r\nb\r\n").unwrap();
+        b.apply(BrowserAction::SetUnixLineEndings(true));
+        b.apply(BrowserAction::Answer(Answer::Picked { purpose: P_IMPORT_FOLDER, paths: vec![src.clone(), host.0.join("single.txt"), host.0.join("dos.txt")] }));
         no_errors(&answer(&mut b, Answer::Chose { purpose: P_IMPORT_GO, index: 1 }));
+        b.apply(BrowserAction::SetUnixLineEndings(false));
+        // Converted: 20 bytes with CRLF, 18 with LF.
+        let dos = &b.rows()[find(&b, "dos.txt").unwrap()];
+        assert_eq!(dos.size, "18 B", "a single file's CRLF became LF");
         assert!(find(&b, "pkg").is_some() && find(&b, "single.txt").is_some(), "{:?}", b.rows());
         // New files take the destination folder's owner (iris-renamed is guest:user).
         let pkg = &b.rows()[find(&b, "pkg").unwrap()];

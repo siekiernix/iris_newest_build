@@ -76,7 +76,24 @@ browser-delete-title = Delete { $count ->
 }?
 browser-delete-body = This deletes { $names } from the disk. It can't be undone.
 browser-delete-body-dirs = This deletes { $names } and everything in them from the disk. It can't be undone.
-browser-xfs-log-unknown = XFS opens read-only: this browser can't tell whether the filesystem's log was replayed. If the machine was stopped without shutting IRIX down, boot it and shut down cleanly first, then choose Edit Anyway.
+browser-xfs-dirty = IRIX was not shut down cleanly: this filesystem's log holds { $count ->
+    [one] a change
+   *[other] { $count } changes
+} IRIX will replay at its next boot, so it opened read-only. Boot the machine and shut IRIX down cleanly, or choose Replay Log.
+browser-xfs-unrecoverable = IRIX was not shut down cleanly, and this filesystem's log cannot be replayed here ({ $reason }), so it opened read-only. Boot the machine to let IRIX recover it.
+browser-replay = Replay Log
+browser-replay-title = Replay the log?
+browser-replay-body = This writes the { $count ->
+    [one] logged change
+   *[other] { $count } logged changes
+} into the filesystem, as IRIX would at its next boot, and marks it cleanly unmounted. Nothing is written if the log cannot be replayed completely.
+browser-replay-ok = Replay
+browser-replaying = Replaying the log
+browser-replayed = Replayed { $count ->
+    [one] one change
+   *[other] { $count } changes
+}; the filesystem is clean.
+browser-unix-line-endings = Text files: Unix line endings
 browser-edit-anyway-title = Edit a damaged filesystem?
 browser-edit-anyway-body = The check found problems. Changing the filesystem now can make them worse. Running fsck in IRIX first is safer.
 browser-edit-anyway-ok = Edit anyway

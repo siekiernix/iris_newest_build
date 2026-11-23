@@ -46,13 +46,16 @@ sys-locale = "0.3"
 
 # The disk browser (D23): rusty-backup's published, MIT-licensed filesystem
 # crates. Released versions only, minimal features; never rusty-backup's main
-# crate (AGPL-3.0) and never fs-xfs 0.1.x (GPL). See the plan's "Disk browser".
+# crate (AGPL-3.0) and never fs-xfs 0.1.x (GPL; 0.2 is MIT). See the plan's
+# "Disk browser".
 sgi-disk = { version = "0.1.0", default-features = false, features = ["xfs"] }
+# Opened directly for XFS so the browser can read the log's state (0.2.1).
+fs-xfs = { version = "0.2.1", default-features = false }
 disk-core = { version = "0.3.0", default-features = false, features = ["fs"] }
 fs-unix = { version = "0.3.0", default-features = false, features = ["efs", "ext"] }
 rb-fsexporter = { version = "0.2.0", default-features = false }
-rb-fsimporter = { version = "0.1.0", default-features = false, features = ["native-zstd"] }
-fs-tar = { version = "0.2.0", default-features = false, features = ["native-zstd"] }
+rb-fsimporter = { version = "0.2.0", default-features = false, features = ["native-zstd"] }
+fs-tar = { version = "0.3.1", default-features = false, features = ["native-zstd"] }
 part-tables = { version = "0.2.0", default-features = false, features = ["sgi"] }
 anyhow = "1"
 

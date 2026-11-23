@@ -211,6 +211,8 @@ pub struct BrowserWindow {
     path: Retained<NSStackView>,
     tools: Vec<(&'static str, iris_gui_core::controller::disk_browser::BrowserAction, Retained<NSButton>)>,
     unpack: Retained<NSButton>,
+    endings: Retained<NSButton>,
+    replay: Retained<NSButton>,
     notice: Retained<NSTextField>,
     edit_anyway: Retained<NSButton>,
     table: Retained<NSTableView>,
@@ -309,9 +311,10 @@ impl BrowserWindow {
         let path = stack(mtm, &[], false, 2.0);
         // The path on the left, the import option on the right.
         let unpack = checkbox(mtm, ids::UNPACK, &t!("browser-import-unpack"), true);
+        let endings = checkbox(mtm, ids::UNIX_LINE_ENDINGS, &t!("browser-unix-line-endings"), false);
         let path_spacer = NSView::new(mtm);
         path_spacer.setContentHuggingPriority_forOrientation(1.0, objc2_app_kit::NSLayoutConstraintOrientation::Horizontal);
-        let path_row = stack(mtm, &[view(&path), path_spacer, view(&unpack)], false, 8.0);
+        let path_row = stack(mtm, &[view(&path), path_spacer, view(&endings), view(&unpack)], false, 12.0);
 
         // The read-only reason, with Edit Anyway when the controller offers it.
         let notice = label(mtm, "");
@@ -319,7 +322,8 @@ impl BrowserWindow {
         notice.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByWordWrapping);
         notice.setPreferredMaxLayoutWidth(600.0);
         let edit_anyway = button(mtm, &t!("browser-edit-anyway"), ids::EDIT_ANYWAY);
-        let notice_row = stack(mtm, &[view(&notice), view(&edit_anyway)], false, 8.0);
+        let replay = button(mtm, &t!("browser-replay"), ids::REPLAY_LOG);
+        let notice_row = stack(mtm, &[view(&notice), view(&edit_anyway), view(&replay)], false, 8.0);
 
         // The table.
         let table = NSTableView::initWithFrame(mtm.alloc(), NSRect::ZERO);
@@ -405,6 +409,8 @@ impl BrowserWindow {
             path,
             tools: tool_buttons,
             unpack,
+            endings,
+            replay,
             notice,
             edit_anyway,
             table,
@@ -500,6 +506,7 @@ impl BrowserWindow {
             }
         }
         self.unpack.setState(if b.unpack_archives() { NSControlStateValueOn } else { 0 });
+        self.endings.setState(if b.unix_line_endings() { NSControlStateValueOn } else { 0 });
         // Read-only reason.
         let reason = b.read_only_reason().unwrap_or_default();
         if self.notice.stringValue().to_string() != reason {
@@ -508,6 +515,8 @@ impl BrowserWindow {
         self.notice.setHidden(reason.is_empty());
         let anyway = b.enabled(&iris_gui_core::controller::disk_browser::BrowserAction::EditAnyway) == Enabled::Yes;
         self.edit_anyway.setHidden(!anyway);
+        let replay = b.enabled(&iris_gui_core::controller::disk_browser::BrowserAction::ReplayLog) == Enabled::Yes;
+        self.replay.setHidden(!replay);
         // Rows: reload only when they changed; then the selection.
         let rows = b.rows();
         let iv = self.data.ivars();

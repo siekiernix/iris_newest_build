@@ -193,6 +193,50 @@ impl OpenFs {
     }
 }
 
+/// An XFS volume's log, as the browser needs it: whether IRIX will replay
+/// something over edits made now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum XfsLog {
+    /// Cleanly unmounted (or the log is on another device): edits are safe.
+    Clean,
+    /// Not cleanly unmounted, and the log can be replayed here.
+    Replayable { transactions: usize },
+    /// Not cleanly unmounted, and the log cannot be replayed here; the reason says why.
+    Unrecoverable(String),
+}
+
+/// The log state of the XFS volume at `offset`, read on a borrow of `io`
+/// (nothing is written).
+pub fn xfs_log(io: &mut BlockIo, offset: u64) -> Result<XfsLog, String> {
+    use fs_xfs::xfs::log::LogState;
+    use fs_xfs::xfs::log_replay::{check_log, LogCheck};
+    let mut fs = fs_xfs::xfs::XfsFilesystem::open(&mut *io, offset).map_err(|e| e.to_string())?;
+    let state = fs.log_state().map_err(|e| e.to_string())?;
+    let sb = fs.superblock().clone();
+    drop(fs);
+    Ok(match state {
+        LogState::Clean | LogState::External => XfsLog::Clean,
+        LogState::Dirty { .. } => match check_log(io, offset, &sb).map_err(|e| e.to_string())? {
+            LogCheck::Clean => XfsLog::Clean,
+            LogCheck::Replayable { transactions } => XfsLog::Replayable { transactions },
+            LogCheck::Unrecoverable(why) => XfsLog::Unrecoverable(why),
+        },
+    })
+}
+
+/// Replay the XFS log at `offset` as a mount would and leave it clean;
+/// the number of transactions applied. Writes nothing when the log cannot be
+/// replayed faithfully.
+pub fn replay_xfs_log(io: &mut BlockIo, offset: u64) -> Result<usize, String> {
+    use fs_xfs::xfs::log_replay::{replay_log, ReplayOutcome};
+    let sb = fs_xfs::xfs::XfsFilesystem::open(&mut *io, offset).map_err(|e| e.to_string())?.superblock().clone();
+    match replay_log(io, offset, &sb).map_err(|e| e.to_string())? {
+        ReplayOutcome::Clean => Ok(0),
+        ReplayOutcome::Replayed(r) => Ok(r.transactions),
+        ReplayOutcome::Unrecoverable(why) => Err(why),
+    }
+}
+
 /// Open partition `p` of the image at `io`. `read_only` is the controller's
 /// reason to refuse edits (a CD-ROM, a running machine); without one the
 /// filesystem opens for editing if the crate can edit it, and read-only with
@@ -444,3 +488,4 @@ mod tests {
         assert!(partitions(&mut io).is_err());
     }
 }
+

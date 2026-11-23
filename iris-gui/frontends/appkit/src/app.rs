@@ -287,6 +287,16 @@ pub fn script_step() {
 
 /// A wake: drain the controller, carry out what it asks, present a new
 /// frame, redraw.
+/// `IRIS_APPKIT_TRACE` set: log ticks and effects to stderr.
+fn trace(what: impl FnOnce() -> String) {
+    thread_local! {
+        static ON: bool = std::env::var_os("IRIS_APPKIT_TRACE").is_some();
+    }
+    if ON.with(|o| *o) {
+        eprintln!("iris-appkit trace: {}", what());
+    }
+}
+
 pub fn tick() {
     let fx = with(|s| {
         s.wake.ticked();
@@ -306,11 +316,17 @@ pub fn tick() {
     });
     match fx {
         Some(fx) => {
+            if !fx.is_empty() {
+                trace(|| format!("tick effects {fx:?}"));
+            }
             run_effects(fx);
             refresh();
         }
         // Busy: try again from a block of its own.
-        None => later(Box::new(tick)),
+        None => {
+            trace(|| "tick busy, again later".into());
+            later(Box::new(tick))
+        }
     }
 }
 
@@ -613,6 +629,7 @@ fn run_effects(fx: Vec<Effect>) {
         }
     }
     if out.quit {
+        trace(|| "quit".into());
         with(|s| s.may_quit = true);
         NSApplication::sharedApplication(mtm()).terminate(None);
     }
