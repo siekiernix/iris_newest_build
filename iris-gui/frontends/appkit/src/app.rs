@@ -39,6 +39,8 @@ struct Shell {
 }
 
 thread_local! {
+    /// Another instance to hand over to, found at launch.
+    static HANDOVER: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
     static SHELL: RefCell<Option<Shell>> = const { RefCell::new(None) };
     static DELEGATE: RefCell<Option<Retained<Delegate>>> = const { RefCell::new(None) };
     static LATER: RefCell<VecDeque<Box<dyn FnOnce()>>> = RefCell::default();
@@ -66,7 +68,21 @@ define_class!(
     unsafe impl NSApplicationDelegate for Delegate {
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _note: &NSNotification) {
+            if let Some(pid) = HANDOVER.with(|h| h.get()) {
+                hand_over(pid);
+            }
             start(self.mtm());
+        }
+
+        /// Activated (by a second launch handing over, or the app switcher)
+        /// with no window showing: show the main window.
+        #[unsafe(method(applicationDidBecomeActive:))]
+        fn did_become_active(&self, _note: &NSNotification) {
+            with(|s| {
+                if !s.win.window.isVisible() && s.browser.is_none() {
+                    s.win.window.makeKeyAndOrderFront(None);
+                }
+            });
         }
 
         /// Cmd+Q and the app menu's Quit come here, not through a window
@@ -103,9 +119,14 @@ define_class!(
     }
 );
 
-/// Run the application until it quits.
+/// Run the application until it quits. The app is single instance: when
+/// another IRIS front end is running, bring that one forward and exit.
 pub fn run() {
     let mtm = mtm();
+    // Hand over once launched: only then does macOS make a user-launched app
+    // active, and an active app may pass activation on.
+    let other = AppController::other_instance();
+    HANDOVER.with(|h| h.set(other));
     let ns_app = NSApplication::sharedApplication(mtm);
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     let delegate: Retained<Delegate> = {
@@ -116,7 +137,9 @@ pub fn run() {
     ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     set_icon(&ns_app);
     DELEGATE.with(|d| *d.borrow_mut() = Some(delegate));
-    crate::menu::build(mtm);
+    if other.is_none() {
+        crate::menu::build(mtm);
+    }
     ns_app.run();
 }
 
@@ -163,6 +186,26 @@ fn start(mtm: MainThreadMarker) {
         // The first run: offer to make a machine.
         later(Box::new(|| shell_command(ShellCommand::NewMachine)));
     }
+}
+
+/// Bring the running instance `pid` forward and exit. Exits directly: the
+/// pidfile and the library are the other instance's.
+fn hand_over(pid: i32) -> ! {
+    use objc2_app_kit::{NSApplicationActivationOptions as O, NSRunningApplication};
+    eprintln!("iris-appkit: IRIS is already running (pid {pid}); bringing it forward");
+    if let Some(other) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+        let v14 = objc2_foundation::NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(
+            objc2_foundation::NSOperatingSystemVersion { majorVersion: 14, minorVersion: 0, patchVersion: 0 },
+        );
+        if v14 {
+            // macOS 14 activates another app only on the active app's word.
+            other.activateFromApplication_options(&NSRunningApplication::currentApplication(), O::ActivateAllWindows);
+        } else {
+            #[allow(deprecated)] // the way below macOS 14
+            other.activateWithOptions(O::ActivateIgnoringOtherApps | O::ActivateAllWindows);
+        }
+    }
+    std::process::exit(0)
 }
 
 /// Run `f` from a main-queue block of its own, once the handler on the stack returned.

@@ -159,6 +159,13 @@ impl AppController {
     /// copy that holds the ports), load the preferences, pick the language,
     /// set the environment the embedded core reads, and select the machine.
     /// Call once, before any machine can start.
+    /// Another IRIS front end already running, by PID. The app is single
+    /// instance: a shell that finds one brings it forward and exits instead
+    /// of launching (launching would take over its ports and its library).
+    pub fn other_instance() -> Option<i32> {
+        crate::model::single_instance::running_other()
+    }
+
     pub fn launch(notify: Arc<dyn Notify>) -> Self {
         // The core must not exit the process when a guest powers off.
         std::env::set_var("IRIS_NO_EXIT_ON_POWEROFF", "1");

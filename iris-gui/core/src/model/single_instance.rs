@@ -40,6 +40,36 @@ pub fn acquire() {
     let _ = std::fs::write(&path, std::process::id().to_string());
 }
 
+/// Another IRIS front end that is running now (egui or the AppKit shell),
+/// by its PID, from the pidfile. A shell that must stay single calls this
+/// before `acquire` and hands over to that instance instead of starting.
+pub fn running_other() -> Option<i32> {
+    let pid: i32 = std::fs::read_to_string(pidfile_path()?).ok()?.trim().parse().ok()?;
+    let me = std::process::id() as i32;
+    if pid <= 1 || pid == me {
+        return None;
+    }
+    is_iris_front_end(pid).then_some(pid)
+}
+
+/// Whether `pid` is alive and is one of our front ends (a dead PID may have
+/// been reused by an unrelated program).
+fn is_iris_front_end(pid: i32) -> bool {
+    #[cfg(unix)]
+    {
+        let comm = std::process::Command::new("ps").args(["-p", &pid.to_string(), "-o", "comm="]).output();
+        matches!(&comm, Ok(o) if o.status.success() && {
+            let name = String::from_utf8_lossy(&o.stdout);
+            name.contains("iris-gui") || name.contains("iris-appkit")
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// Remove the pidfile on clean exit.
 pub fn release() {
     if let Some(path) = pidfile_path() {
