@@ -453,6 +453,7 @@ Host performance: idle parking, thread parking, GFIFO, benchmarks.
 |---|---|---|
 | [decode-cache-conflicts-vary-by-boot.md](perf/decode-cache-conflicts-vary-by-boot.md) | measure | The shadow cache's 64-page decode cache conflicts differently on every boot: up to 25% interpreter variance per boot, gone with 256 pages; compare builds over several boots |
 | [bench-first-numbers.md](perf/bench-first-numbers.md) | history | First benchmark matrix — 2026-08-21 |
+| [chd-codecs-compressed-disks-sync-on-every-stop.md](perf/chd-codecs-compressed-disks-sync-on-every-stop.md) | measure | A compressed CHD rebuilds the whole disk on every stop (lzma 143 s, zstd ~110 s for a 4.3 GB IRIX disk); uncompressed never syncs and boots fastest |
 | [guest-compiler-changes-the-benchmark.md](perf/guest-compiler-changes-the-benchmark.md) | measure | The guest compiler is part of the benchmark: GCC 14.2 against 16.2.1 changes Dhrystone and rotate90 by 37% in guest instructions, and the pin that fixes it |
 | [gfifo-backend-experiment.md](perf/gfifo-backend-experiment.md) | history | GFIFO backend: swappable ring for benchmarking — 2026-09-14 |
 | [gui-idle-refresh.md](perf/gui-idle-refresh.md) | rule | Status-bar-only heartbeat refresh skips the compose and (in iris-gui) publishes nothing; iris-gui uploads only the damaged scanlines |
