@@ -18,14 +18,59 @@ use sgi_disk::SgiFsKind;
 
 /// `Read + Write + Seek` over a block node, which reads and writes at byte
 /// offsets. Reads and writes past the end are clipped, as a file's would be.
+/// The filesystem crates may read or write a few bytes anywhere (XFS log
+/// replay does), while a CHD takes whole sectors only: such an access is
+/// widened to the sectors around it, and a write patches them.
 pub struct BlockIo {
     node: Box<dyn BlockNode>,
     pos: u64,
+    /// The sector size the node is accessed in.
+    sector: u64,
 }
 
 impl BlockIo {
+    /// Over a disk's 512-byte sectors.
     pub fn new(node: Box<dyn BlockNode>) -> Self {
-        Self { node, pos: 0 }
+        Self::with_sector(node, 512)
+    }
+
+    pub fn with_sector(node: Box<dyn BlockNode>, sector: u64) -> Self {
+        Self { node, pos: 0, sector }
+    }
+
+    /// The whole sectors around `[offset, offset + len)`, within the disk.
+    fn around(&self, offset: u64, len: usize) -> (u64, usize) {
+        let start = offset - offset % self.sector;
+        let end = (offset + len as u64).div_ceil(self.sector) * self.sector;
+        (start, (end.min(self.node.size()) - start) as usize)
+    }
+
+    fn aligned(&self, offset: u64, len: usize) -> bool {
+        offset % self.sector == 0 && len as u64 % self.sector == 0
+    }
+
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        if self.aligned(offset, buf.len()) {
+            return self.node.read(offset, buf);
+        }
+        let (start, len) = self.around(offset, buf.len());
+        let mut whole = vec![0u8; len];
+        self.node.read(start, &mut whole)?;
+        let at = (offset - start) as usize;
+        buf.copy_from_slice(&whole[at..at + buf.len()]);
+        Ok(())
+    }
+
+    fn write_at(&mut self, offset: u64, buf: &[u8]) -> io::Result<()> {
+        if self.aligned(offset, buf.len()) {
+            return self.node.write(offset, buf);
+        }
+        let (start, len) = self.around(offset, buf.len());
+        let mut whole = vec![0u8; len];
+        self.node.read(start, &mut whole)?;
+        let at = (offset - start) as usize;
+        whole[at..at + buf.len()].copy_from_slice(buf);
+        self.node.write(start, &whole)
     }
 
     pub fn size(&self) -> u64 {
@@ -45,7 +90,7 @@ impl Read for BlockIo {
             return Ok(0);
         }
         let n = buf.len().min((size - self.pos) as usize);
-        self.node.read(self.pos, &mut buf[..n])?;
+        self.read_at(self.pos, &mut buf[..n])?;
         self.pos += n as u64;
         Ok(n)
     }
@@ -58,7 +103,7 @@ impl Write for BlockIo {
             return Err(io::Error::new(io::ErrorKind::WriteZero, "past the end of the disk"));
         }
         let n = buf.len().min((size - self.pos) as usize);
-        self.node.write(self.pos, &buf[..n])?;
+        self.write_at(self.pos, &buf[..n])?;
         self.pos += n as u64;
         Ok(n)
     }
@@ -88,7 +133,8 @@ impl Seek for BlockIo {
 /// copy-on-write setting, so edits go where the guest's would.
 pub fn open_image(path: &str, cdrom: bool, overlay: bool) -> io::Result<BlockIo> {
     let kind = if cdrom { ImageKind::Cdrom } else { ImageKind::Disk };
-    Ok(BlockIo::new(iris::block_node::open_image(path, kind, overlay, None)?))
+    let node = iris::block_node::open_image(path, kind, overlay, None)?;
+    Ok(BlockIo::with_sector(node, if cdrom { 2048 } else { 512 }))
 }
 
 /// What a partition holds, as far as the browser is concerned.
@@ -477,6 +523,59 @@ mod tests {
         assert_eq!(io.read(&mut buf).unwrap(), 6);
         assert_eq!(&buf[..6], b"abcdef");
         assert_eq!(io.read(&mut buf).unwrap(), 0);
+    }
+
+    /// A node that takes whole sectors only, as a CHD does.
+    struct Sectors(Vec<u8>);
+
+    impl BlockNode for Sectors {
+        fn size(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn read(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+            assert!(offset % 512 == 0 && buf.len() % 512 == 0, "read {offset} +{}", buf.len());
+            buf.copy_from_slice(&self.0[offset as usize..offset as usize + buf.len()]);
+            Ok(())
+        }
+        fn write(&mut self, offset: u64, buf: &[u8]) -> io::Result<()> {
+            assert!(offset % 512 == 0 && buf.len() % 512 == 0, "write {offset} +{}", buf.len());
+            self.0[offset as usize..offset as usize + buf.len()].copy_from_slice(buf);
+            Ok(())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn discard(&mut self, _: u64, _: u64) -> io::Result<()> {
+            Ok(())
+        }
+        fn block_status(&self, _: u64, len: u64) -> io::Result<iris::block_node::BlockStatus> {
+            Ok(iris::block_node::BlockStatus { state: iris::block_node::BlockState::Data, backing_offset: None, len })
+        }
+        fn backing(&self) -> Option<&dyn BlockNode> {
+            None
+        }
+    }
+
+    #[test]
+    fn block_io_reaches_a_whole_sector_disk_at_any_byte() {
+        let mut io = BlockIo::new(Box::new(Sectors((0..2048u32).map(|i| i as u8).collect())));
+        // A few bytes across a sector boundary: the sectors around them are
+        // read, patched and written back, the bytes beside them kept.
+        io.seek(SeekFrom::Start(509)).unwrap();
+        io.write_all(b"XYZ!").unwrap();
+        io.seek(SeekFrom::Start(500)).unwrap();
+        let mut buf = [0u8; 20];
+        io.read_exact(&mut buf).unwrap();
+        let mut want: Vec<u8> = (500..520u32).map(|i| i as u8).collect();
+        want[9..13].copy_from_slice(b"XYZ!");
+        assert_eq!(&buf[..], &want[..]);
+        // And at the very end of the disk.
+        io.seek(SeekFrom::End(-3)).unwrap();
+        io.write_all(b"end").unwrap();
+        io.seek(SeekFrom::End(-5)).unwrap();
+        let mut tail = [0u8; 5];
+        io.read_exact(&mut tail).unwrap();
+        assert_eq!(&tail, &[(2043 % 256) as u8, (2044 % 256) as u8, b'e', b'n', b'd']);
     }
 
     #[test]

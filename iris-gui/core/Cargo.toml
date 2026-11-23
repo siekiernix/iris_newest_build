@@ -50,7 +50,7 @@ sys-locale = "0.3"
 # "Disk browser".
 sgi-disk = { version = "0.1.0", default-features = false, features = ["xfs"] }
 # Opened directly for XFS so the browser can read the log's state (0.2.1).
-fs-xfs = { version = "0.2.1", default-features = false }
+fs-xfs = { version = "0.2.2", default-features = false }
 disk-core = { version = "0.3.0", default-features = false, features = ["fs"] }
 fs-unix = { version = "0.3.0", default-features = false, features = ["efs", "ext"] }
 rb-fsexporter = { version = "0.2.0", default-features = false }
