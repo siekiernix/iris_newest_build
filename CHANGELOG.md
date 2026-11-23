@@ -52,6 +52,10 @@ hashes are given where a change is easiest to understand by reading the commit.
   IRIS.app that shares its machines. It adds a disk browser that exports,
   imports and edits files on a stopped machine's EFS and XFS disks. It is a
   preview; see `iris-gui-README.md`.
+- IRIS Preview: Preferences > Mouse can follow the Mac pointer instead of
+  capturing it, so the guest mouse works over RustDesk and other remote
+  desktops.
+- Quitting while a machine runs now asks first, in both front ends.
 
 ### jitv2 flushes
 

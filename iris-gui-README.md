@@ -324,6 +324,19 @@ browser cannot tell whether the filesystem's log still needs replaying: shut
 IRIX down cleanly first. Files dragged from the Finder onto the list are
 imported. Moving files between folders is not there yet.
 
+Over a remote desktop (RustDesk, Screen Sharing) a captured mouse does not
+move the guest's pointer, because those tools move the Mac's pointer without
+reporting motion. Set **Preferences > Mouse** to *Follow the Mac pointer*:
+nothing is captured, the guest's pointer is steered to wherever yours is over
+the display (it trails fast moves a little), clicks and the wheel go with
+it, and the keyboard reaches the guest while the display is focused (Command
+shortcuts stay with the Mac).
+
+Closing the window (File > Close) leaves the app and its machine running;
+the Dock icon brings it back. Quit (Command-Q) asks first while a machine
+runs. Only one copy of IRIS runs at a time: opening it again brings the
+running one forward.
+
 The **Devices** menu lists each disk and CD-ROM with what it can do now:
 change or eject a disc, mount it in IRIX, browse it, and commit or discard a
 disk's copy-on-write changes. The Help menu has the guide to mounting the

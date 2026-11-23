@@ -177,7 +177,8 @@ fn start(mtm: MainThreadMarker) {
     // (`IRIS_APPKIT_SCRIPT_DELAY`, default 3). "select:NAME" selects a machine,
     // "page:ID" shows a settings section, "set:ID=VALUE" reports a settings control,
     // "open:N" and "pick:N,M" open and select rows of the disk browser,
-    // "type:TEXT" fills the browser's editor (\n for a newline),
+    // "type:TEXT" fills the browser's editor (\n for a newline), "at:X,Y[,B]"
+    // puts the pointer on a guest pixel in Follow mode,
     // "dump:devices" prints the Devices menu, "dump:browser" the browser's
     // folder, "drop:PATH" drops a host file on it. IRIS_APPKIT_ANSWERS (see
     // effects.rs) answers the prompts these raise.
@@ -249,6 +250,13 @@ pub fn script_step() {
         };
         if let Some(value) = value {
             setting(id.to_string(), value);
+        }
+    } else if let Some(at) = step.strip_prefix("at:") {
+        // at:X,Y[,BUTTONS]: the host pointer over guest pixel (X, Y), as Follow mode sends it.
+        let v: Vec<i32> = at.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+        if let [x, y, rest @ ..] = v.as_slice() {
+            let buttons = rest.first().copied().unwrap_or(0) as u8;
+            display(iris_gui_core::controller::display::DisplayAction::PointerAt { x: *x, y: *y, buttons, wheel_lines: 0.0, wheel_points: 0.0 });
         }
     } else if let Some(path) = step.strip_prefix("drop:") {
         browser_drop(vec![std::path::PathBuf::from(path)], None);

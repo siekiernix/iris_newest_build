@@ -9,7 +9,12 @@ can drive it and see it without the screen unlocked.
   id), or `select:NAME`, `page:SECTION` (settings), `set:CONTROL=VALUE`
   (`i:N`, `b:0/1`, `t:TEXT`, `n:NUM`, as the control would report),
   `open:N`/`pick:N,M` (browser rows), `drop:PATH`, `type:TEXT` (the browser's
-  editor, `\n` for a newline), `dump:browser`, `dump:devices`.
+  editor, `\n` for a newline), `at:X,Y[,BUTTONS]` (Follow mode's pointer on a
+  guest pixel), `dump:browser`, `dump:devices`.
+- The app's monitor has `screen`, `ptr` and `key` (one HostInput per
+  machine): `ptr pos` reads where the guest pointer is, `key type` types.
+  The Indy PROM on a blank disk stops at a menu with a cursor: enough to
+  test pointer steering with no IRIX to shut down.
 - `IRIS_APPKIT_ANSWERS="yes;text:foo;choose:1;pick:/path"` answers the next
   prompts (confirm, text, choice, file or folder picker) in order; later
   prompts show their real panels. Every disk-browser write starts with one.
@@ -27,8 +32,7 @@ Gotchas:
   (`performSelector:afterDelay:` does not fire in those run-loop modes):
   answer panels through `IRIS_APPKIT_ANSWERS`, and do not script pop-ups.
 - With the screen locked the app is never active, so there is no key window.
-- The app's embedded core has no `screen`, `ptr` or `key` monitor commands
-  (those belong to the CLI's display), and Shut Down sends `halt` to the
+- Shut Down sends `halt` to the
   serial console, which does nothing on a guest whose console is the
   graphics screen. A guest booted in the app with the screen locked cannot be
   shut down cleanly; do not start IRIX from a script unless something can
