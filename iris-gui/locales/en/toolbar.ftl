@@ -17,7 +17,7 @@ tb-full-screen = Full screen
 tb-serial-console = Serial console
 tb-settings = Machine settings
 tb-no-cdrom = This machine has no CD-ROM drive.
-browser-unavailable-running = Disks can be browsed while the machine is off.
+browser-unavailable-running = This machine's disks can be browsed while it is off.
 
 tb-new-machine = New machine
 tb-duplicate = Duplicate this machine

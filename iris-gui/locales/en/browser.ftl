@@ -128,3 +128,4 @@ browser-editor-save = Save
 browser-editor-close = Close
 browser-editor-read-only = Read-only
 browser-empty = This folder is empty.
+browser-closed-stopped = The machine stopped, so the disk browser closed. Browse Files again to edit the disk.

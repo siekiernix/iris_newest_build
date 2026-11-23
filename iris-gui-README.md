@@ -328,15 +328,23 @@ for a machine with a CD-ROM drive. While a machine stops, the status bar says
 so, and says when it is applying disk changes to a compressed CHD.
 
 It also has a **disk browser**: the Browse Files button next to a disk on the
-summary page, Browse Files in the toolbar, or a click on a disk's status
-light opens the disk of a stopped machine. It shows the partitions and their
-files, exports files, folders and `.tar`/`.tar.gz` archives, imports files
-and folders (unpacking `.tardist` and tar archives unless told not to), and
-edits text files, names, permissions and owners on EFS and XFS. CD-ROMs open
-read-only. XFS opens read-only until you choose Edit Anyway, because the
-browser cannot tell whether the filesystem's log still needs replaying: shut
-IRIX down cleanly first. Files dragged from the Finder onto the list are
-imported. Moving files between folders is not there yet.
+summary page, Browse Files in the toolbar, the library row's right-click menu,
+or a click on a disk's status light opens the disk. It shows the partitions
+and their files, exports files, folders and `.tar`/`.tar.gz` archives,
+imports files and folders (unpacking `.tardist` and tar archives unless told
+not to; optionally converting DOS line endings to Unix ones), and edits text
+files, names, permissions and owners on EFS and XFS. Files dragged from the
+Finder onto the list are imported. Moving files between folders is not there
+yet.
+
+- **While the machine runs** (Indy, Indigo2, Indigo2 IMPACT, O2, Octane) the
+  disk is read through the machine, as IRIX sees it, and opens read-only;
+  what it shows can be a few seconds behind what IRIX has written. Stop the
+  machine to change files; the browser closes when the machine stops.
+- **CD-ROMs** open read-only.
+- **XFS** that IRIX did not shut down cleanly opens read-only, with **Replay
+  Log** to apply the log as IRIX would at its next mount; after that it can
+  be edited.
 
 Over a remote desktop (RustDesk, Screen Sharing) a captured mouse does not
 move the guest's pointer, because those tools move the Mac's pointer without

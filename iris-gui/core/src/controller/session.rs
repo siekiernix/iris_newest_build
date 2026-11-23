@@ -707,6 +707,20 @@ impl SessionController {
         }
     }
 
+    /// The running machine's disk at SCSI `(bus, id)`, read through the
+    /// machine; `None` when it is not running or cannot be read that way.
+    pub(crate) fn live_disk(&self, bus: usize, id: u8) -> Option<crate::model::handle::LiveDisk> {
+        if !self.is_running() {
+            return None;
+        }
+        self.emu.live_disk(bus, id)
+    }
+
+    /// A stop was asked for and has not finished.
+    pub(crate) fn stopping(&self) -> bool {
+        self.stopping
+    }
+
     /// A stop was sent another way (a forced Power Off).
     pub(crate) fn mark_stopping(&mut self) {
         self.stopping = true;

@@ -387,8 +387,21 @@ impl AppController {
         }
         // Edits must reach the file the machine boots from.
         self.flush(fx);
-        let running = self.session.is_running();
-        self.browser = Some(super::disk_browser::DiskBrowserController::open(target, running, self.notify.clone()));
+        // A running machine's disk is read through the machine, read-only.
+        let live = if self.session.is_running() {
+            let Some(dev) = self.cfg.scsi.get(&key) else { return };
+            let (bus, id) = dev.placement(key);
+            match self.session.live_disk(bus as usize, id) {
+                Some(l) => Some(l),
+                None => {
+                    fx.push(Effect::Toast(t!("browser-unavailable-running")));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        self.browser = Some(super::disk_browser::DiskBrowserController::open(target, live, self.notify.clone()));
     }
 
     /// Close the browser; `false` (with a toast) while it is writing.
@@ -1048,6 +1061,16 @@ impl Controller for AppController {
         self.session.drain(&mut fx);
         let events = self.route_session_events(&mut fx);
         use super::session::SessionEvent;
+        // A browser reading through the machine has nothing to read once it
+        // stops: close it as soon as a stop or a disk sync begins.
+        let machine_going = !self.session.is_running() || self.session.stopping() || self.session.syncing().is_some();
+        if machine_going && self.browser.as_ref().is_some_and(|b| b.live()) {
+            if let Some(b) = &mut self.browser {
+                b.close();
+            }
+            self.browser = None;
+            fx.push(Effect::Toast(t!("browser-closed-stopped")));
+        }
         if events.iter().any(|e| matches!(e, SessionEvent::Stopped | SessionEvent::Halted | SessionEvent::PoweredOff)) {
             if self.display.captured() && events.contains(&SessionEvent::Halted) {
                 // Give the cursor back once the guest is safe to stop.

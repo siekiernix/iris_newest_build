@@ -66,6 +66,8 @@ hashes are given where a change is easiest to understand by reading the commit.
   and converts them to zlib or uncompressed, which stops much faster. It asks
   when such a disk is attached and before the machine first starts; Keep As
   Is stops the suggestion.
+- IRIS Preview's disk browser opens a running Indy, Indigo2, O2 or Octane's
+  disks read-only, as IRIX sees them.
 - IRIS Preview: right-click a machine in the library for Start, Settings,
   Browse Files, Duplicate, Rename, Delete and Show in Finder; Edit Settings…
   on the machine page; no disc button without a CD-ROM drive; the status bar

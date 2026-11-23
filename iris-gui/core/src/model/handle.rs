@@ -50,6 +50,12 @@ pub enum Cmd {
     EjectCdrom { id: u8 },
     /// Inject an IRIX shell command to (re)mount /CDROM for SCSI `id`.
     RemountCdrom { id: u8 },
+    /// Read `len` bytes at `offset` of the running machine's disk at SCSI
+    /// `id` on disk bus `bus`, as the guest sees it (`Workstation::read_disk`),
+    /// for the disk browser. Read-only.
+    ReadDisk { bus: usize, id: u8, offset: u64, len: usize, reply: Sender<std::io::Result<Vec<u8>>> },
+    /// That disk's size, `None` when there is none.
+    DiskSize { bus: usize, id: u8, reply: Sender<Option<u64>> },
     Quit,
 }
 
@@ -344,6 +350,17 @@ impl EmulatorHandle {
     pub fn send(&self, cmd: Cmd) {
         self.pending_commands.fetch_add(1, Ordering::AcqRel);
         if self.cmd_tx.send(cmd).is_err() { self.pending_commands.fetch_sub(1, Ordering::Release); }
+    }
+
+    /// The running machine's disk at SCSI `id` on bus `bus` as a read-only
+    /// block node, read through the machine (`LiveDisk`); `None` when the
+    /// machine is not running or has no such disk.
+    pub fn live_disk(&self, bus: usize, id: u8) -> Option<LiveDisk> {
+        let tx = WorkerLink { tx: self.cmd_tx.clone(), pending: self.pending_commands.clone() };
+        let (reply, answer) = crossbeam_channel::bounded(1);
+        tx.send(Cmd::DiskSize { bus, id, reply });
+        let size = answer.recv_timeout(LIVE_READ_TIMEOUT).ok().flatten()?;
+        Some(LiveDisk { link: tx, bus, id, size })
     }
 
     /// Drain pending events; return them for the UI to consume.
@@ -938,6 +955,19 @@ fn worker_loop(
                     None => { let _ = evt_tx.send(Evt::Error(t!("emu-not-running"))); }
                 }
             }
+            Ok(Cmd::ReadDisk { bus, id, offset, len, reply }) => {
+                let read = match machine.as_ref() {
+                    Some(m) => {
+                        let mut buf = vec![0u8; len];
+                        m.read_disk(bus, id, offset, &mut buf).map(|()| buf)
+                    }
+                    None => Err(std::io::Error::new(std::io::ErrorKind::NotConnected, t!("emu-not-running"))),
+                };
+                let _ = reply.send(read);
+            }
+            Ok(Cmd::DiskSize { bus, id, reply }) => {
+                let _ = reply.send(machine.as_ref().and_then(|m| m.disk_size(bus, id)));
+            }
             Ok(Cmd::RemountCdrom { id }) => {
                 match machine.as_ref() {
                     Some(m) => {
@@ -962,6 +992,77 @@ fn worker_loop(
                 return;
             }
         }
+    }
+}
+
+/// How long one read of a running machine's disk may wait for the worker
+/// (it may be busy saving a state).
+const LIVE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Sends commands to the worker as `EmulatorHandle::send` does.
+#[derive(Clone)]
+struct WorkerLink {
+    tx: Sender<Cmd>,
+    pending: Arc<AtomicUsize>,
+}
+
+impl WorkerLink {
+    fn send(&self, cmd: Cmd) {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        if self.tx.send(cmd).is_err() {
+            self.pending.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
+/// A running machine's disk, read through the machine as the guest sees it
+/// (overlay and CHD diff included), for browsing. It cannot be written: the
+/// guest owns the disk while it runs.
+#[derive(Clone)]
+pub struct LiveDisk {
+    link: WorkerLink,
+    bus: usize,
+    id: u8,
+    size: u64,
+}
+
+impl BlockNode for LiveDisk {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn read(&mut self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        // The worker reads the hook in one go; ask for at most 1 MiB at a time.
+        for (i, chunk) in buf.chunks_mut(1 << 20).enumerate() {
+            let at = offset + (i as u64) * (1 << 20);
+            let (reply, answer) = crossbeam_channel::bounded(1);
+            self.link.send(Cmd::ReadDisk { bus: self.bus, id: self.id, offset: at, len: chunk.len(), reply });
+            let data = answer
+                .recv_timeout(LIVE_READ_TIMEOUT)
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, t!("emu-not-running")))??;
+            chunk.copy_from_slice(&data);
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, _offset: u64, _buf: &[u8]) -> std::io::Result<()> {
+        Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, t!("browser-unavailable-running")))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn discard(&mut self, _offset: u64, _len: u64) -> std::io::Result<()> {
+        Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, t!("browser-unavailable-running")))
+    }
+
+    fn block_status(&self, _offset: u64, len: u64) -> std::io::Result<iris::block_node::BlockStatus> {
+        Ok(iris::block_node::BlockStatus { state: iris::block_node::BlockState::Data, backing_offset: None, len })
+    }
+
+    fn backing(&self) -> Option<&dyn BlockNode> {
+        None
     }
 }
 

@@ -3,9 +3,9 @@
 //! and cancel.
 //!
 //! The controller decides what is read-only and says why: CD-ROMs always; a
-//! running machine (the core has no read hook yet, so the browser is not
-//! offered at all while it runs); XFS the crate cannot edit; a filesystem
-//! whose check failed, until the user chooses to go on.
+//! running machine (read through the machine as the guest sees it,
+//! `model::handle::LiveDisk`); XFS the crate cannot edit; a filesystem whose
+//! check failed, until the user chooses to go on.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -251,6 +251,9 @@ enum Done {
 
 pub struct DiskBrowserController {
     target: BrowseTarget,
+    /// The running machine's disk, read through the machine; `None` reads
+    /// the image file (the machine is stopped).
+    live: Option<crate::model::handle::LiveDisk>,
     /// Why nothing here may write, when nothing may.
     read_only: Option<String>,
     header: Option<part_tables::sgi::SgiVolumeHeader>,
@@ -322,17 +325,19 @@ fn owner_rule(spec: &TextSpec, s: &str) -> Result<(), String> {
 }
 
 impl DiskBrowserController {
-    /// Open the browser on `target`. `running` makes it read-only.
-    pub fn open(target: BrowseTarget, running: bool, notify: Arc<dyn Notify>) -> Self {
+    /// Open the browser on `target`. With `live` (the machine is running) the
+    /// disk is read through the machine, read-only.
+    pub fn open(target: BrowseTarget, live: Option<crate::model::handle::LiveDisk>, notify: Arc<dyn Notify>) -> Self {
         let read_only = if target.cdrom {
             Some(t!("browser-ro-cdrom"))
-        } else if running {
+        } else if live.is_some() {
             Some(t!("browser-ro-running"))
         } else {
             None
         };
         let mut c = Self {
             target,
+            live,
             read_only,
             header: None,
             parts: Vec::new(),
@@ -373,7 +378,15 @@ impl DiskBrowserController {
     }
 
     fn image(&self) -> std::io::Result<BlockIo> {
-        model::open_image(&self.target.path, self.target.cdrom, self.target.overlay)
+        match &self.live {
+            Some(l) => Ok(BlockIo::with_sector(Box::new(l.clone()), if self.target.cdrom { 2048 } else { 512 })),
+            None => model::open_image(&self.target.path, self.target.cdrom, self.target.overlay),
+        }
+    }
+
+    /// Reading a running machine's disk through the machine.
+    pub fn live(&self) -> bool {
+        self.live.is_some()
     }
 
     // ---- read accessors -----------------------------------------------------
@@ -1405,7 +1418,7 @@ mod tests {
         let p = root.0.join("blank.img");
         std::fs::write(&p, vec![0u8; 1 << 16]).unwrap();
         let t = BrowseTarget { machine: "m".into(), label: "CD".into(), path: p.to_string_lossy().into(), cdrom: true, overlay: false };
-        let b = DiskBrowserController::open(t, false, Arc::new(NoWake));
+        let b = DiskBrowserController::open(t, None, Arc::new(NoWake));
         assert!(b.error().is_some());
         assert_eq!(b.enabled(&BrowserAction::Move), Enabled::No(t!("browser-no-partition")));
     }
@@ -1419,7 +1432,7 @@ mod tests {
         let Ok(image) = std::env::var("IRIS_BROWSER_TEST_IMAGE") else { return };
         let host = crate::model::machines::testing::TempRoot::new("browser-host");
         let t = BrowseTarget { machine: "indy".into(), label: "Disk 1".into(), path: image, cdrom: false, overlay: false };
-        let mut b = DiskBrowserController::open(t, false, Arc::new(NoWake));
+        let mut b = DiskBrowserController::open(t, None, Arc::new(NoWake));
         assert!(b.error().is_none(), "{:?}", b.error());
         eprintln!("partitions: {:#?}", b.partitions());
         no_errors(&settle(&mut b));

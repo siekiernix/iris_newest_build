@@ -361,8 +361,14 @@ impl AppController {
                 Enabled::when(cd, || t!("tb-no-cdrom"))
             }
             tb::BROWSE_FILES => {
-                if running {
-                    // The core's read hook is not on this branch yet.
+                // A running machine is read through its own disk hook, which
+                // the workstations that report disk activity have.
+                use iris::config::MachineProfile as P;
+                let hook = matches!(
+                    self.config().machine.profile,
+                    P::IndyIp24 | P::Indigo2Ip22 | P::Indigo2Ip28 | P::O2Ip32 | P::OctaneIp30
+                );
+                if running && !hook {
                     Enabled::No(t!("browser-unavailable-running"))
                 } else {
                     machine()
