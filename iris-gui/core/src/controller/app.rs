@@ -956,7 +956,9 @@ impl Controller for AppController {
                 let ps2 = self.session.ps2();
                 let guest = ps2.as_deref().map(|p| p as &dyn super::display::GuestInput);
                 let per_line = self.cfg.mouse_scroll_pixels_per_line;
-                fx.extend(self.display.apply(a, guest, &mut self.prefs, per_line));
+                let follower = if super::display::follows_pointer(&self.prefs) { self.session.follower() } else { None };
+                let pointer = follower.as_deref().map(|f| f as &dyn super::display::GuestPointer);
+                fx.extend(self.display.apply_with(a, guest, pointer, &mut self.prefs, per_line));
             }
             AppAction::OpenBrowser { key } => self.open_browser(key, &mut fx),
             AppAction::BrowseFiles => {

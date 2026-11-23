@@ -172,6 +172,7 @@ impl MainWindow {
             }
         }
         self.display.set_captured(running && d.captured());
+        self.display.set_follow(running && iris_gui_core::controller::display::follows_pointer(app.prefs()));
         let (max, integer) = iris_gui_core::controller::display::scaling(app.prefs(), 1.0);
         let filter = match app.prefs().display_filter {
             iris_gui_core::controller::display::DisplayFilter::Auto => None,

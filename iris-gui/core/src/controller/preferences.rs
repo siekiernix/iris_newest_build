@@ -3,7 +3,7 @@
 //! app-wide (D22), so they live in `GuiSettings`, not a machine's config.
 
 use super::app::AppAction;
-use super::display::{DisplayAction, DisplayFilter, DisplayMode};
+use super::display::{DisplayAction, DisplayFilter, DisplayMode, PointerMode};
 use super::settings::{Field, FieldKind, Value};
 use super::Enabled;
 use crate::model::settings::GuiSettings;
@@ -15,10 +15,12 @@ pub mod field {
     pub const SCALE: &str = "prefs.scale";
     pub const INTEGER_ONLY: &str = "prefs.integer-only";
     pub const FILTER: &str = "prefs.filter";
+    pub const POINTER: &str = "prefs.pointer";
 }
 
 const MODES: [DisplayMode; 2] = [DisplayMode::Fit, DisplayMode::Scale];
 const FILTERS: [DisplayFilter; 3] = [DisplayFilter::Auto, DisplayFilter::Nearest, DisplayFilter::Linear];
+const POINTERS: [PointerMode; 2] = [PointerMode::Capture, PointerMode::Follow];
 
 /// The form for `prefs`.
 pub fn fields(prefs: &GuiSettings) -> Vec<Field> {
@@ -57,6 +59,16 @@ pub fn fields(prefs: &GuiSettings) -> Vec<Field> {
             enabled: Enabled::Yes,
         },
         Field {
+            id: field::POINTER,
+            label: t!("prefs-pointer"),
+            help: Some(t!("prefs-pointer-help")),
+            kind: FieldKind::Choice {
+                options: vec![t!("prefs-pointer-capture"), t!("prefs-pointer-follow")],
+                selected: POINTERS.iter().position(|m| *m == prefs.pointer_mode).unwrap_or(0),
+            },
+            enabled: Enabled::Yes,
+        },
+        Field {
             id: field::FILTER,
             label: t!("prefs-filter"),
             help: None,
@@ -79,6 +91,7 @@ pub fn action_for(id: &str, value: Value) -> Option<AppAction> {
         (field::SCALE, Value::Number(n)) => d(DisplayAction::SetScale(n as f32)),
         (field::INTEGER_ONLY, Value::Bool(b)) => d(DisplayAction::SetIntegerOnly(b)),
         (field::FILTER, Value::Index(i)) => d(DisplayAction::SetFilter(*FILTERS.get(i)?)),
+        (field::POINTER, Value::Index(i)) => d(DisplayAction::SetPointerMode(*POINTERS.get(i)?)),
         _ => return None,
     })
 }
@@ -91,7 +104,8 @@ mod tests {
     fn every_field_maps_to_an_action() {
         let prefs = GuiSettings::default();
         let f = fields(&prefs);
-        assert_eq!(f.len(), 5);
+        assert_eq!(f.len(), 6);
+        assert!(matches!(action_for(field::POINTER, Value::Index(1)), Some(AppAction::Display(DisplayAction::SetPointerMode(PointerMode::Follow)))));
         assert!(matches!(action_for(field::LANGUAGE, Value::Index(0)), Some(AppAction::SetLanguage(l)) if l.is_empty()));
         assert!(matches!(action_for(field::FILTER, Value::Index(1)), Some(AppAction::Display(DisplayAction::SetFilter(DisplayFilter::Nearest)))));
         assert!(matches!(action_for(field::SCALE, Value::Number(2.0)), Some(AppAction::Display(DisplayAction::SetScale(_)))));

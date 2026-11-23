@@ -70,6 +70,10 @@ pub struct GuiSettings {
     pub integer_only: bool,
     #[serde(default)]
     pub display_filter: DisplayFilter,
+    /// How the mouse reaches the guest: captured, or following the host
+    /// pointer (for remote desktops, which report no relative motion).
+    #[serde(default)]
+    pub pointer_mode: PointerMode,
 
     /// Runtime storage root, captured before the working directory changes.
     #[serde(skip)]
@@ -91,6 +95,17 @@ pub enum DisplayMode {
     /// At `vm_scale`, shrinking only when the window is too small.
     #[default]
     Scale,
+}
+
+/// How the mouse reaches the guest.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PointerMode {
+    /// A click on the display captures the mouse; motion is forwarded.
+    #[default]
+    Capture,
+    /// No capture: the guest's pointer is steered to where the host pointer is.
+    Follow,
 }
 
 /// How the guest display is sampled when drawn larger or smaller.
@@ -131,6 +146,7 @@ impl Default for GuiSettings {
             display_mode: DisplayMode::default(),
             integer_only: false,
             display_filter: DisplayFilter::default(),
+            pointer_mode: PointerMode::default(),
             root: None,
             errors: Vec::new(),
             migration_pending: false,

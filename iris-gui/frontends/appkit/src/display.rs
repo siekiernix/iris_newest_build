@@ -87,6 +87,8 @@ pub struct State {
     /// the app-wide display preferences.
     scaling: Cell<(f32, bool, Option<bool>)>,
     captured: Cell<bool>,
+    /// Follow mode: the guest pointer follows the host's, with no capture.
+    follow: Cell<bool>,
     buttons: Cell<u8>,
     /// Text shown when there is no picture (powered off, starting).
     overlay: RefCell<Option<Retained<objc2_app_kit::NSTextField>>>,
@@ -128,7 +130,13 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, e: &NSEvent) {
-            if self.ivars().captured.get() {
+            if self.ivars().follow.get() {
+                // Follow mode: a click is a click, and the display takes the keyboard.
+                if let Some(w) = self.window() {
+                    w.makeFirstResponder(Some(self));
+                }
+                self.button(e, 0x01, true);
+            } else if self.ivars().captured.get() {
                 self.button(e, 0x01, true);
             } else {
                 crate::app::display(DisplayAction::Capture);
@@ -182,11 +190,15 @@ define_class!(
 
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, e: &NSEvent) {
+            let dy = e.scrollingDeltaY() as f32;
+            let (lines, points) = if e.hasPreciseScrollingDeltas() { (0.0, -dy) } else { (-dy, 0.0) };
+            if self.ivars().follow.get() {
+                self.follow_at(e, lines, points);
+                return;
+            }
             if !self.ivars().captured.get() {
                 return;
             }
-            let dy = e.scrollingDeltaY() as f32;
-            let (lines, points) = if e.hasPreciseScrollingDeltas() { (0.0, -dy) } else { (-dy, 0.0) };
             crate::app::display(DisplayAction::Pointer {
                 dx: 0.0,
                 dy: 0.0,
@@ -208,10 +220,15 @@ define_class!(
 
         #[unsafe(method(flagsChanged:))]
         fn flags_changed(&self, e: &NSEvent) {
-            if !self.ivars().captured.get() {
+            let follow = self.ivars().follow.get();
+            if !self.ivars().captured.get() && !follow {
                 return;
             }
             let code = e.keyCode();
+            // Follow mode keeps Command for the Mac's own shortcuts.
+            if follow && !self.ivars().captured.get() && matches!(code, 0x36 | 0x37) {
+                return;
+            }
             let Some(k) = keys::guest_key(code) else { return };
             // Down when the modifier's own flag is now set.
             let flags = e.modifierFlags();
@@ -278,6 +295,7 @@ impl DisplayView {
             texture: RefCell::new(None),
             scaling: Cell::new((0.0, false, None)),
             captured: Cell::new(false),
+            follow: Cell::new(false),
             buttons: Cell::new(0),
             overlay: RefCell::new(None),
         };
@@ -288,6 +306,20 @@ impl DisplayView {
         // A layer-hosting view: the layer is set before the view wants one.
         v.setLayer(Some(&layer));
         v.setWantsLayer(true);
+        // Cursor moves over the view arrive without capture (Follow mode),
+        // whichever view has the keyboard; the area follows the view's size.
+        // SAFETY: a tracking area owned by the view it reports to.
+        unsafe {
+            use objc2_app_kit::{NSTrackingArea, NSTrackingAreaOptions as T};
+            let area = NSTrackingArea::initWithRect_options_owner_userInfo(
+                mtm.alloc(),
+                NSRect::ZERO,
+                T::MouseMoved | T::ActiveInKeyWindow | T::InVisibleRect,
+                Some(&v),
+                None,
+            );
+            v.addTrackingArea(&area);
+        }
         crate::ui::set_id(&v, "display");
         v
     }
@@ -463,8 +495,52 @@ impl DisplayView {
         }
     }
 
+    /// Follow the controller's pointer mode (Follow: no capture, steering).
+    pub fn set_follow(&self, on: bool) {
+        let st = self.ivars();
+        if st.follow.get() != on {
+            st.follow.set(on);
+            st.buttons.set(0);
+        }
+    }
+
+    /// The guest pixel under the event's location, clamped to the picture.
+    fn guest_point(&self, e: &NSEvent) -> Option<(i32, i32)> {
+        let st = self.ivars();
+        let tex = st.texture.borrow();
+        let (_, w, h) = tex.as_ref()?;
+        let (w, h) = (*w as f32, *h as f32);
+        let p = self.convertPoint_fromView(e.locationInWindow(), None);
+        let b = self.bounds().size;
+        let scale = st.layer.contentsScale() as f32;
+        let (max_scale, integer_only, _) = st.scaling.get();
+        let ((dw, dh), _) =
+            iris_gui_core::controller::display::draw_size((b.width as f32, b.height as f32), (w, h), scale, max_scale, integer_only);
+        if dw <= 0.0 || dh <= 0.0 {
+            return None;
+        }
+        let ox = (b.width as f32 - dw) / 2.0;
+        let oy = (b.height as f32 - dh) / 2.0;
+        // The view's y grows up; the guest's grows down.
+        let gx = ((p.x as f32 - ox) * w / dw).floor().clamp(0.0, w - 1.0);
+        let gy = ((b.height as f32 - p.y as f32 - oy) * h / dh).floor().clamp(0.0, h - 1.0);
+        Some((gx as i32, gy as i32))
+    }
+
+    /// Follow mode: tell the controller where the host pointer is.
+    fn follow_at(&self, e: &NSEvent, wheel_lines: f32, wheel_points: f32) {
+        let Some((x, y)) = self.guest_point(e) else { return };
+        crate::app::display(DisplayAction::PointerAt { x, y, buttons: self.ivars().buttons.get(), wheel_lines, wheel_points });
+    }
+
     fn button(&self, e: &NSEvent, bit: u8, down: bool) {
         let st = self.ivars();
+        if st.follow.get() {
+            let b = if down { st.buttons.get() | bit } else { st.buttons.get() & !bit };
+            st.buttons.set(b);
+            self.follow_at(e, 0.0, 0.0);
+            return;
+        }
         if !st.captured.get() {
             return;
         }
@@ -476,6 +552,10 @@ impl DisplayView {
 
     fn motion(&self, e: &NSEvent) {
         let st = self.ivars();
+        if st.follow.get() {
+            self.follow_at(e, 0.0, 0.0);
+            return;
+        }
         if !st.captured.get() {
             return;
         }
@@ -490,6 +570,18 @@ impl DisplayView {
 
     fn key(&self, e: &NSEvent, down: bool) {
         let code = e.keyCode();
+        // Follow mode: keys go to the guest while the display has the
+        // keyboard, except Command chords, which stay the Mac's.
+        let command = e.modifierFlags().contains(NSEventModifierFlags::Command);
+        if self.ivars().follow.get() && !self.ivars().captured.get() && !command {
+            if keys::is_modifier(code) {
+                return;
+            }
+            if let Some(k) = keys::guest_key(code) {
+                crate::app::display(DisplayAction::Key { key: k, down, repeat: down && e.isARepeat() });
+            }
+            return;
+        }
         if !self.ivars().captured.get() {
             // Not captured: a shortcut the key map knows (F11), else nothing.
             if down {

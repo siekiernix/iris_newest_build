@@ -283,6 +283,9 @@ pub struct EmulatorHandle {
     /// the GUI thread can push keyboard / mouse events at it directly.
     /// `None` when no machine is up.
     pub ps2: Arc<Mutex<Option<Arc<Ps2Controller>>>>,
+    /// The live machine's host input (pointer steering by the hardware
+    /// cursor, as the VNC server uses it), when running.
+    pub host: Arc<Mutex<Option<Arc<iris::hostinput::HostInput>>>>,
     pub status: Status,
     /// NAT IP-frame count observed this run (reset on Start). Non-zero once the
     /// guest's networking has actually carried traffic; latches the NET
@@ -305,6 +308,8 @@ impl EmulatorHandle {
         let sink_head1_for_worker = frame_sink_head1.clone();
         let ps2: Arc<Mutex<Option<Arc<Ps2Controller>>>> = Arc::new(Mutex::new(None));
         let ps2_for_worker = ps2.clone();
+        let host: Arc<Mutex<Option<Arc<iris::hostinput::HostInput>>>> = Arc::new(Mutex::new(None));
+        let host_for_worker = host.clone();
         let thread = std::thread::Builder::new()
             .name("iris-gui-emu".into())
             // Machine::new alone puts >1 MB on the stack (Physical::device_map),
@@ -315,7 +320,7 @@ impl EmulatorHandle {
             // worker generous headroom. This is virtual address space, lazily
             // committed, so the large reservation has no real cost.
             .stack_size(64 * 1024 * 1024)
-            .spawn(move || worker_loop(Events { tx: evt_tx, notify }, sink_for_worker, sink_head1_for_worker, ps2_for_worker, pending_for_worker, abandoned_for_worker, cmd_rx))
+            .spawn(move || worker_loop(Events { tx: evt_tx, notify }, sink_for_worker, sink_head1_for_worker, ps2_for_worker, host_for_worker, pending_for_worker, abandoned_for_worker, cmd_rx))
             .expect("spawn iris-gui-emu thread");
         Self {
             cmd_tx,
@@ -326,6 +331,7 @@ impl EmulatorHandle {
             frame_sink,
             frame_sink_head1,
             ps2,
+            host,
             status: Status::default(),
             net_seen_frames: 0,
         }
@@ -500,6 +506,7 @@ fn worker_loop(
     frame_sink: FrameSink,
     frame_sink_head1: FrameSink,
     ps2_slot: Arc<Mutex<Option<Arc<Ps2Controller>>>>,
+    host_slot: Arc<Mutex<Option<Arc<iris::hostinput::HostInput>>>>,
     pending_commands: Arc<AtomicUsize>,
     abandoned_machine: Arc<AtomicBool>,
     cmd_rx: Receiver<Cmd>,
@@ -615,6 +622,11 @@ fn worker_loop(
                             crate::model::netplan::gather_host_ifaces()
                                 .into_iter().map(|h| (h.network, h.prefix)).collect());
                         *ps2_slot.lock() = Some(m.get_ps2());
+                        // One host input per machine: it adds the monitor's
+                        // screen/ptr/key commands, the VNC server shares it,
+                        // and the display's follow-the-pointer mode steers by it.
+                        let host_input = iris::hostinput::HostInput::attach(&*m);
+                        *host_slot.lock() = Some(host_input.clone());
                         // Latch every CPU's counters for the live MIPS and Hz estimate.
                         // A headless machine has none, and then sends no tick.
                         let counters = m.cpu_counters();
@@ -629,7 +641,7 @@ fn worker_loop(
                         // an exit: the machine itself is fine without it.
                         if let Some(listen) = vnc_listen {
                             match iris::vnc::VncServer::start(
-                                iris::hostinput::HostInput::attach(&*m),
+                                host_input.clone(),
                                 &listen,
                                 vnc_max_fps,
                                 "IRIS",
@@ -674,6 +686,7 @@ fn worker_loop(
             Ok(Cmd::Stop) => {
                 if let Some(m) = machine.take() {
                     *ps2_slot.lock() = None;
+                    *host_slot.lock() = None;
                     meter = None;
                     // Drop the VNC server with the machine it serves: it holds
                     // the display and the port, and a restart rebinds both.
@@ -697,6 +710,7 @@ fn worker_loop(
                 let mut synced = 0usize;
                 if let Some(mut m) = machine.take() {
                     *ps2_slot.lock() = None;
+                    *host_slot.lock() = None;
                     meter = None;
                     // Its grab loop reads the display, so it goes first.
                     drop(vnc_server.take());
@@ -917,6 +931,7 @@ fn worker_loop(
             }
             Ok(Cmd::Quit) | Err(_) => {
                 *ps2_slot.lock() = None;
+                *host_slot.lock() = None;
                 // Drop the VNC server first: its grab loop reads the display,
                 // and it must not outlive the machine it serves.
                 drop(vnc_server.take());

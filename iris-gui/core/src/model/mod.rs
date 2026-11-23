@@ -18,6 +18,7 @@ pub mod machines;
 pub mod macos_sandbox;
 pub mod netfix;
 pub mod netplan;
+pub mod pointer_follow;
 pub mod ram;
 pub mod safe_stop;
 pub mod serial_console;

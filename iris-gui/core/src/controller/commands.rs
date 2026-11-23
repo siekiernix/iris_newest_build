@@ -240,6 +240,7 @@ impl AppController {
                     machine()
                 }
             }
+            menu::CAPTURE if super::display::follows_pointer(self.prefs()) => Enabled::No(t!("prefs-pointer-no-capture")),
             tb::DETACH_DISPLAY | tb::FULL_SCREEN | menu::SEND_F11 | menu::SEND_CAD | menu::SEND_ESC | menu::CAPTURE => {
                 need_running()
             }

@@ -179,6 +179,9 @@ pub struct StatusBar {
 pub struct SessionController {
     pub(crate) emu: EmulatorHandle,
     pub(crate) syncing: Option<SyncProgress>,
+    /// Follow mode's steering thread for the running machine, with the host
+    /// input it steers (a new machine gets a new one).
+    follower: Option<(Arc<iris::hostinput::HostInput>, Arc<crate::model::pointer_follow::PointerFollower>)>,
     starting: bool,
     /// The config the running machine started with (RAM, CPU and network are
     /// fixed until it stops).
@@ -238,6 +241,7 @@ impl SessionController {
         Self {
             emu: EmulatorHandle::spawn(notify),
             syncing: None,
+            follower: None,
             starting: false,
             started: None,
             prev_halted: true,
@@ -297,6 +301,22 @@ impl SessionController {
     /// The live PS/2 controller, for the display's input pump.
     pub fn ps2(&self) -> Option<Arc<iris::dev::ps2::Ps2Controller>> {
         self.emu.ps2.lock().clone()
+    }
+
+    /// Follow mode's pointer for the running machine, started on first use.
+    pub(crate) fn follower(&mut self) -> Option<Arc<crate::model::pointer_follow::PointerFollower>> {
+        let Some(host) = self.emu.host.lock().clone() else {
+            self.follower = None;
+            return None;
+        };
+        match &self.follower {
+            Some((h, f)) if Arc::ptr_eq(h, &host) => Some(f.clone()),
+            _ => {
+                let f = Arc::new(crate::model::pointer_follow::PointerFollower::start(host.clone()));
+                self.follower = Some((host, f.clone()));
+                Some(f)
+            }
+        }
     }
 
     /// The frame sinks for head 0 and head 1, for the shell's presenter.

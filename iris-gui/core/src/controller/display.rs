@@ -15,7 +15,7 @@ pub use crate::model::framebuffer::{Frame, FrameSink};
 
 use super::keys::{CaptureChords, ModKey};
 use super::Effect;
-pub use crate::model::settings::{DisplayFilter, DisplayMode};
+pub use crate::model::settings::{DisplayFilter, DisplayMode, PointerMode};
 use crate::model::settings::GuiSettings;
 
 /// How long the window must stay unfocused before a capture is released. Long
@@ -36,6 +36,11 @@ pub enum DisplayAction {
     /// Relative motion in points, the buttons held (bit 0 left, 1 right,
     /// 2 middle, 3 and 4 the side buttons), and the wheel in lines and points.
     Pointer { dx: f32, dy: f32, buttons: u8, wheel_lines: f32, wheel_points: f32 },
+    /// Follow mode: the host pointer is over guest pixel (x, y), with these
+    /// buttons held and this much wheel. Sent without capture.
+    PointerAt { x: i32, y: i32, buttons: u8, wheel_lines: f32, wheel_points: f32 },
+    /// Capture the mouse, or follow the host pointer (app-wide).
+    SetPointerMode(PointerMode),
     ToggleFullScreen,
     /// The window left full screen by itself (the green button, Esc in AppKit).
     FullScreenChanged(bool),
@@ -119,6 +124,30 @@ fn is_modifier(k: GuestKey) -> bool {
 pub trait GuestInput {
     fn key(&self, key: GuestKey, down: bool);
     fn mouse(&self, buttons: u8, dx: i32, dy: i32, dz: i32);
+}
+
+/// Where Follow mode's pointer goes: the steering thread of the running machine.
+pub trait GuestPointer {
+    fn move_to(&self, x: i32, y: i32);
+    fn buttons(&self, held: u8);
+    fn wheel(&self, dz: i32);
+}
+
+impl GuestPointer for crate::model::pointer_follow::PointerFollower {
+    fn move_to(&self, x: i32, y: i32) {
+        crate::model::pointer_follow::PointerFollower::move_to(self, x, y)
+    }
+    fn buttons(&self, held: u8) {
+        crate::model::pointer_follow::PointerFollower::buttons(self, held)
+    }
+    fn wheel(&self, dz: i32) {
+        crate::model::pointer_follow::PointerFollower::wheel(self, dz)
+    }
+}
+
+/// Whether the shell should follow the host pointer instead of capturing.
+pub fn follows_pointer(prefs: &GuiSettings) -> bool {
+    prefs.pointer_mode == PointerMode::Follow
 }
 
 impl GuestInput for iris::dev::ps2::Ps2Controller {
@@ -212,10 +241,24 @@ impl DisplayController {
         prefs: &mut GuiSettings,
         wheel_px_per_line: f64,
     ) -> Vec<Effect> {
+        self.apply_with(action, guest, None, prefs, wheel_px_per_line)
+    }
+
+    /// [`DisplayController::apply`], with Follow mode's pointer.
+    pub fn apply_with(
+        &mut self,
+        action: DisplayAction,
+        guest: Option<&dyn GuestInput>,
+        pointer: Option<&dyn GuestPointer>,
+        prefs: &mut GuiSettings,
+        wheel_px_per_line: f64,
+    ) -> Vec<Effect> {
         let mut fx = Vec::new();
+        let follow = follows_pointer(prefs);
         match action {
             DisplayAction::Capture => {
-                if guest.is_some() {
+                // Follow mode never captures: the pointer is shared.
+                if guest.is_some() && !follow {
                     self.engage();
                 }
             }
@@ -225,9 +268,17 @@ impl DisplayController {
                 if self.captured {
                     self.unfocused_since.get_or_insert_with(Instant::now);
                 }
+                if follow {
+                    // Keys typed elsewhere never reach the guest: lift what it holds.
+                    for k in self.held_mods.drain(..) {
+                        if let Some(g) = guest {
+                            g.key(k, false);
+                        }
+                    }
+                }
             }
             DisplayAction::Key { key, down, repeat } => {
-                if !self.captured {
+                if !self.captured && !follow {
                     return fx;
                 }
                 let Some(g) = guest else { return fx };
@@ -248,6 +299,26 @@ impl DisplayController {
                     g.mouse(buttons, mx as i32, my as i32, mz as i32);
                     self.last_buttons = buttons;
                 }
+            }
+            DisplayAction::PointerAt { x, y, buttons, wheel_lines, wheel_points } => {
+                let (true, Some(p)) = (follow, pointer) else { return fx };
+                p.move_to(x, y);
+                if buttons != self.last_buttons {
+                    p.buttons(buttons);
+                    self.last_buttons = buttons;
+                }
+                let per_line = if wheel_px_per_line > 0.0 { wheel_px_per_line as f32 } else { 1.0 };
+                self.carry.2 += wheel_lines + wheel_points / per_line;
+                let mz = self.carry.2.trunc();
+                self.carry.2 -= mz;
+                p.wheel(mz as i32);
+            }
+            DisplayAction::SetPointerMode(m) => {
+                if m == PointerMode::Follow {
+                    self.release(guest);
+                }
+                prefs.pointer_mode = m;
+                save(prefs, &mut fx);
             }
             DisplayAction::ToggleFullScreen => self.fullscreen = !self.fullscreen,
             DisplayAction::FullScreenChanged(on) => self.fullscreen = on,
@@ -433,6 +504,43 @@ mod tests {
     fn key(d: &mut DisplayController, g: &Rec, k: GuestKey, down: bool) {
         let mut prefs = GuiSettings::default();
         d.apply(DisplayAction::Key { key: k, down, repeat: false }, Some(g), &mut prefs, 1.0);
+    }
+
+    #[derive(Default)]
+    struct Steer(std::sync::Mutex<Vec<String>>);
+    impl GuestPointer for Steer {
+        fn move_to(&self, x: i32, y: i32) {
+            self.0.lock().unwrap().push(format!("move {x},{y}"));
+        }
+        fn buttons(&self, held: u8) {
+            self.0.lock().unwrap().push(format!("buttons {held}"));
+        }
+        fn wheel(&self, dz: i32) {
+            if dz != 0 {
+                self.0.lock().unwrap().push(format!("wheel {dz}"));
+            }
+        }
+    }
+
+    #[test]
+    fn follow_mode_steers_and_types_without_capture() {
+        let mut d = DisplayController::default();
+        let g = Rec::default();
+        let p = Steer::default();
+        let mut prefs = GuiSettings::default();
+        let at = |x, y, buttons| DisplayAction::PointerAt { x, y, buttons, wheel_lines: 0.0, wheel_points: 0.0 };
+        // Capture mode ignores positions.
+        d.apply_with(at(5, 5, 0), Some(&g), Some(&p), &mut prefs, 1.0);
+        assert!(p.0.lock().unwrap().is_empty());
+        d.apply_with(DisplayAction::SetPointerMode(PointerMode::Follow), Some(&g), Some(&p), &mut prefs, 1.0);
+        d.apply_with(DisplayAction::Capture, Some(&g), Some(&p), &mut prefs, 1.0);
+        assert!(!d.captured(), "Follow never captures");
+        d.apply_with(at(10, 20, 0), Some(&g), Some(&p), &mut prefs, 1.0);
+        d.apply_with(at(10, 20, 1), Some(&g), Some(&p), &mut prefs, 1.0);
+        assert_eq!(*p.0.lock().unwrap(), ["move 10,20", "move 10,20", "buttons 1"]);
+        // Keys reach the guest without capture.
+        d.apply_with(DisplayAction::Key { key: GuestKey::KeyA, down: true, repeat: false }, Some(&g), Some(&p), &mut prefs, 1.0);
+        assert_eq!(*g.0.borrow(), [(GuestKey::KeyA, true)]);
     }
 
     #[test]
