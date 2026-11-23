@@ -112,9 +112,12 @@ define_class!(
             true
         }
 
+        /// The Mac way: closing the window (File > Close, Cmd+W) leaves the app,
+        /// and any machine in it, running; Quit (Cmd+Q) ends it, and the
+        /// Dock icon brings the window back.
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
         fn last_window_closed(&self, _app: &NSApplication) -> bool {
-            true
+            false
         }
     }
 );

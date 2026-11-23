@@ -338,15 +338,6 @@ define_class!(
     unsafe impl NSObjectProtocol for WindowDelegate {}
 
     unsafe impl NSWindowDelegate for WindowDelegate {
-        /// The main window is the app: closing it is a request to quit, which
-        /// the controller may answer with a question (a machine still running)
-        /// or by quitting. It never just hides a running machine.
-        #[unsafe(method(windowShouldClose:))]
-        fn should_close(&self, _w: &NSWindow) -> bool {
-            crate::app::later(Box::new(|| crate::app::dispatch(iris_gui_core::controller::app::AppAction::RequestQuit)));
-            false
-        }
-
         #[unsafe(method(windowDidBecomeKey:))]
         fn became_key(&self, _n: &objc2_foundation::NSNotification) {
             crate::app::display(iris_gui_core::controller::display::DisplayAction::Focus(true));
