@@ -558,6 +558,11 @@ Stops…**), with the machine stopped:
 - **Uncompressed** never rebuilds: the CHD is written in place. The file grows
   to the space the disk uses (2.9 GB for that 4.3 GB disk), up to its full size.
 
+IRIS Preview asks once, when such a disk is attached in Settings or New
+Machine, and the machine page keeps pointing it out until it is converted or
+kept with **Keep As Is**. A kept disk is remembered (`convert_declined` in
+`gui.json`) and never suggested again; the Devices menu still converts it.
+
 The file keeps its name, so the machine's settings do not change. Pending
 changes in a `.diff.chd` are folded in, and a cancelled or failed conversion
 leaves the disk as it was.

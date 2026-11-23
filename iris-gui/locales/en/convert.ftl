@@ -24,3 +24,6 @@ convert-cancel = Cancel
 ov-convert = Convert…
 ov-convert-suggest = { $disk } is a compressed CHD: every stop rebuilds the whole disk, which takes minutes. Converting it to zlib makes stops quicker.
 app-busy-reason = Running a machine or working on its disks
+convert-keep = Keep As Is
+convert-keep-body = Keep As Is leaves the disk compressed and stops suggesting this; Devices > Convert for Quicker Stops… still converts it later.
+convert-keep-tip = Don't suggest converting this disk again. Devices > Convert for Quicker Stops… still converts it.

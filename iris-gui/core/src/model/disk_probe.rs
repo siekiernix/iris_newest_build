@@ -93,6 +93,12 @@ impl DiskProbe {
         h.get(&PathBuf::from(path)).cloned().flatten()
     }
 
+    /// Whether `path` has been checked at least once (its header, if any,
+    /// is known).
+    pub fn checked(&self, path: &str) -> bool {
+        self.headers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&PathBuf::from(path))
+    }
+
     /// Drop what is known about `path` (it was just rewritten).
     pub fn forget(&self, path: &str) {
         let key = PathBuf::from(path);

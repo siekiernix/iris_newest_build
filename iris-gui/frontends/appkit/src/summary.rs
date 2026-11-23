@@ -202,6 +202,10 @@ fn details(mtm: MainThreadMarker, o: &Overview) -> Vec<Retained<NSView>> {
                 b.setBezelStyle(NSBezelStyle::Push);
                 b.setToolTip(Some(&ns(&t!("convert-menu-tip"))));
                 parts.push(view(&b));
+                let keep = button(mtm, &t!("convert-keep"), &item::id(item::DECLINE_CONVERT, key));
+                keep.setBezelStyle(NSBezelStyle::Push);
+                keep.setToolTip(Some(&ns(&t!("convert-keep-tip"))));
+                parts.push(view(&keep));
             }
         }
         let line = stack(mtm, &parts, false, 8.0);

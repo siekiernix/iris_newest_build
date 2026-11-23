@@ -92,6 +92,8 @@ pub enum AppAction {
     ConvertDisk { key: u8 },
     /// Stop the running disk conversion; the disk stays as it was.
     CancelConversion,
+    /// Keep `[scsi.KEY]` as it is: no more suggestions to convert it.
+    DeclineConvert { key: u8 },
     Answer(Answer),
 }
 
@@ -145,6 +147,8 @@ pub struct AppController {
     /// A disk being converted, and a format question waiting for its answer.
     pub(crate) conversion: Option<super::convert::Conversion>,
     pub(crate) pending_convert: Option<super::convert::Asked>,
+    /// CHDs just attached, to ask about once their headers are read.
+    pub(crate) attach_checks: Vec<super::convert::AttachCheck>,
     /// Disk images' readability, checked off the UI thread.
     pub(crate) probe: crate::model::disk_probe::DiskProbe,
     notify: Arc<dyn Notify>,
@@ -233,6 +237,7 @@ impl AppController {
             browser: None,
             conversion: None,
             pending_convert: None,
+            attach_checks: Vec::new(),
             probe: crate::model::disk_probe::DiskProbe::new(notify.clone()),
             notify,
             problems: Default::default(),
@@ -501,7 +506,7 @@ impl AppController {
         }
     }
 
-    fn save_prefs(&mut self, fx: &mut Vec<Effect>) {
+    pub(crate) fn save_prefs(&mut self, fx: &mut Vec<Effect>) {
         if let Err(e) = self.prefs.save() {
             fx.push(Effect::Toast(t!("toast-settings-save-failed", error = e)));
         }
@@ -843,7 +848,12 @@ impl Controller for AppController {
         let mut fx = Vec::new();
         match action {
             AppAction::Select(name) => self.select(&name, &mut fx),
-            AppAction::CreateMachine { name, config } => self.create(&name, *config, &mut fx),
+            AppAction::CreateMachine { name, config } => {
+                self.create(&name, *config, &mut fx);
+                if self.selected() == Some(name.as_str()) {
+                    self.watch_attached(&Default::default());
+                }
+            }
             AppAction::Rename { machine } => {
                 if self.guard(&mut fx) {
                     fx.push(Effect::AskText(TextSpec {
@@ -950,9 +960,11 @@ impl Controller for AppController {
                     _ => false,
                 };
                 let dir = self.machine_dir();
+                let disks_before = self.disk_paths();
                 let (changed, more) = self.settings.apply(a, &mut self.cfg, dir);
                 fx.extend(more);
                 if changed {
+                    self.watch_attached(&disks_before);
                     fx.extend(self.mark_dirty());
                     if live && self.session.is_running() {
                         use crate::model::handle::Cmd;
@@ -1003,6 +1015,7 @@ impl Controller for AppController {
             }
             AppAction::ConvertDisk { key } => self.ask_convert(key, &mut fx),
             AppAction::CancelConversion => self.cancel_convert(),
+            AppAction::DeclineConvert { key } => self.decline_convert(key, &mut fx),
             AppAction::Answer(a) => {
                 if self.convert_answer(&a, &mut fx) {
                     return fx;
@@ -1239,6 +1252,61 @@ mod tests {
         assert_eq!(menu[0].entries[0].id, "browse:1");
         // No overlay file yet: no copy-on-write entries.
         assert_eq!(menu[0].entries.len(), 1);
+        app.shutdown();
+    }
+
+    #[test]
+    fn a_slow_chd_is_asked_about_once_when_attached() {
+        use super::super::convert::CONVERT_FORMAT;
+        use libchdman_rs::hd::{create_from_reader, HdCreateOptions};
+        let _g = CWD.lock().unwrap_or_else(|e| e.into_inner());
+        let root = TempRoot::new("convert-ask");
+        let mut app = app_in(&root, &["alpha"]);
+        let chd = root.0.join("slow.chd");
+        let data = vec![7u8; 1 << 20];
+        let opts = HdCreateOptions {
+            logical_size: 1 << 20,
+            hunk_size: 4096,
+            unit_size: 512,
+            codecs: [libchdman_rs::CHD_CODEC_LZMA, 0, 0, 0],
+            geometry: None,
+            ident: None,
+        };
+        create_from_reader(&data[..], &chd, opts, &mut |_| {}, &|| false).unwrap();
+        let path = chd.to_string_lossy().into_owned();
+        let attach = |app: &mut AppController| {
+            app.config_mut().scsi.clear();
+            app.config_mut().scsi.insert(1, iris::config::ScsiDeviceConfig { path: path.clone(), ..Default::default() });
+            app.apply(AppAction::ConfigEdited);
+            app.watch_attached(&Default::default());
+        };
+        // Wait for the disk probe, then for the question.
+        let question = |app: &mut AppController| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < until {
+                for e in app.tick() {
+                    if let Effect::Choose(c) = e {
+                        if c.purpose == CONVERT_FORMAT {
+                            return Some(c);
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            None
+        };
+        attach(&mut app);
+        let c = question(&mut app).expect("a slow CHD is asked about when attached");
+        assert_eq!(c.choices, [t!("convert-to-zlib"), t!("convert-to-uncompressed"), t!("convert-keep")]);
+        assert!(app.suggest_convert(1), "the machine page points it out until answered");
+        app.apply(AppAction::Answer(Answer::Chose { purpose: CONVERT_FORMAT, index: 2 }));
+        assert!(!app.suggest_convert(1), "Keep As Is stops the suggestion");
+        let saved = GuiSettings::load_in(root.0.clone(), &root.0);
+        assert!(saved.convert_declined.contains(&path), "and is remembered");
+        // Attached again: no question, but the Devices menu still converts it.
+        attach(&mut app);
+        assert!(question(&mut app).is_none());
+        assert!(app.disk_menu()[0].entries.iter().any(|e| e.id == "disk.convert:1"));
         app.shutdown();
     }
 

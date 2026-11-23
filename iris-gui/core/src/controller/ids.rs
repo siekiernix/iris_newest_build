@@ -83,6 +83,8 @@ pub mod item {
     pub const DISCARD_COW: &str = "cow.discard:";
     /// Followed by the disk's key: convert its compressed CHD to a quicker format.
     pub const CONVERT_DISK: &str = "disk.convert:";
+    /// Followed by the disk's key: keep it as it is, no more suggestions.
+    pub const DECLINE_CONVERT: &str = "disk.keep:";
 
     pub fn id(prefix: &str, item: impl std::fmt::Display) -> String {
         format!("{prefix}{item}")

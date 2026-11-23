@@ -60,7 +60,8 @@ hashes are given where a change is easiest to understand by reading the commit.
   machine's front (Indy, Indigo2, O2, Octane, Fuel, Tezro, Origin and Onyx)
   instead of a generic computer.
 - IRIS Preview points out CHD disks whose compression makes every stop slow
-  and converts them to zlib or uncompressed, which stops much faster.
+  and converts them to zlib or uncompressed, which stops much faster. It asks
+  once when such a disk is attached; Keep As Is stops the suggestion.
 - IRIS Preview's disk browser replays the XFS log of an IRIX 6.5 disk that was
   not shut down cleanly; Detach Display shows the display again; the status
   bar shows progress while disks synchronize.

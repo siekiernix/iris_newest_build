@@ -74,6 +74,10 @@ pub struct GuiSettings {
     /// pointer (for remote desktops, which report no relative motion).
     #[serde(default)]
     pub pointer_mode: PointerMode,
+    /// Compressed CHDs (absolute paths) the user chose to keep as they are:
+    /// no more suggestions to convert them.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub convert_declined: std::collections::BTreeSet<String>,
 
     /// Runtime storage root, captured before the working directory changes.
     #[serde(skip)]
@@ -147,6 +151,7 @@ impl Default for GuiSettings {
             integer_only: false,
             display_filter: DisplayFilter::default(),
             pointer_mode: PointerMode::default(),
+            convert_declined: Default::default(),
             root: None,
             errors: Vec::new(),
             migration_pending: false,

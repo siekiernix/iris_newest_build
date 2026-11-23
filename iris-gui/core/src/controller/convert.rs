@@ -1,10 +1,14 @@
 //! Converting a machine's compressed CHD disk so that stopping it is quick
-//! (`model::chd_convert`). The machine page suggests it for disks compressed
-//! with lzma or zstd, whose rebuild after every stop takes minutes; the
+//! (`model::chd_convert`). A disk compressed with lzma or zstd, whose rebuild
+//! after every stop takes minutes, is asked about once when it is attached
+//! (Settings, New Machine) and pointed out on the machine page until the user
+//! converts it or keeps it as it is (`GuiSettings::convert_declined`). The
 //! Devices menu offers it for any compressed CHD. zlib comes first: it stays
 //! small. Uncompressed never rebuilds, but its file can be very large.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::model::chd_convert::{self, ChdFormat, ChdHeader};
 use crate::model::job::Job;
@@ -31,7 +35,22 @@ pub(crate) struct Conversion {
 pub(crate) struct Asked {
     key: u8,
     formats: Vec<ChdFormat>,
+    /// Asked because the disk was just attached: the last choice keeps it as
+    /// it is for good.
+    attached: Option<String>,
 }
+
+/// A CHD just attached to the selected machine, waiting for the disk probe
+/// to read its header.
+pub(crate) struct AttachCheck {
+    machine: String,
+    key: u8,
+    path: String,
+    since: Instant,
+}
+
+/// How long an attached disk's header may take to read before it is let go.
+const ATTACH_WAIT: Duration = Duration::from_secs(30);
 
 impl AppController {
     /// The selected machine's `[scsi.KEY]` disk as a CHD: its label, path
@@ -56,9 +75,80 @@ impl AppController {
     }
 
     /// Whether the machine page should suggest converting `[scsi.KEY]`:
-    /// compressed with a codec that is slow to rebuild.
+    /// compressed with a codec that is slow to rebuild, and not kept as it
+    /// is by the user.
     pub fn suggest_convert(&self, key: u8) -> bool {
-        self.chd_disk(key).is_some_and(|(_, _, h)| h.slow())
+        self.chd_disk(key).is_some_and(|(_, path, h)| h.slow() && !self.prefs().convert_declined.contains(&path))
+    }
+
+    /// Stop suggesting to convert `[scsi.KEY]`.
+    pub(crate) fn decline_convert(&mut self, key: u8, fx: &mut Vec<Effect>) {
+        if let Some((_, path, _)) = self.chd_disk(key) {
+            self.decline_path(path, fx);
+        }
+    }
+
+    fn decline_path(&mut self, path: String, fx: &mut Vec<Effect>) {
+        if self.prefs_mut().convert_declined.insert(path) {
+            self.save_prefs(fx);
+        }
+    }
+
+    /// The selected machine's hard disk paths (absolute), by key.
+    pub(crate) fn disk_paths(&self) -> BTreeMap<u8, String> {
+        let Some(dir) = self.machine_dir() else { return BTreeMap::new() };
+        self.config()
+            .scsi
+            .iter()
+            .filter(|(_, d)| !d.is_cdrom() && !d.path.trim().is_empty())
+            .map(|(k, d)| (*k, machines::resolve(&dir, &d.path).to_string_lossy().into_owned()))
+            .collect()
+    }
+
+    /// Watch the CHDs that are in `disk_paths` now but were not in `before`:
+    /// once their headers are read, a slow one is asked about.
+    pub(crate) fn watch_attached(&mut self, before: &BTreeMap<u8, String>) {
+        let Some(machine) = self.selected().map(str::to_string) else { return };
+        for (key, path) in self.disk_paths() {
+            let chd = path.to_ascii_lowercase().ends_with(".chd");
+            if chd && before.get(&key) != Some(&path) {
+                self.probe.readable(&path);
+                self.attach_checks.retain(|c| c.path != path);
+                self.attach_checks.push(AttachCheck { machine: machine.clone(), key, path, since: Instant::now() });
+            }
+        }
+    }
+
+    /// Ask about one attached disk whose header has been read.
+    fn attach_tick(&mut self, fx: &mut Vec<Effect>) {
+        if self.attach_checks.is_empty() || self.pending_convert.is_some() || self.conversion.is_some() {
+            return;
+        }
+        let selected = self.selected().map(str::to_string);
+        let paths = self.disk_paths();
+        let mut ask = None;
+        let mut checks = std::mem::take(&mut self.attach_checks);
+        checks.retain(|c| {
+            // The disk must still be where it was attached.
+            if selected.as_deref() != Some(&c.machine) || paths.get(&c.key) != Some(&c.path) {
+                return false;
+            }
+            match self.probe.chd_header(&c.path) {
+                Some(h) => {
+                    if ask.is_none() && h.slow() && !self.prefs().convert_declined.contains(&c.path) {
+                        ask = Some(c.key);
+                    }
+                    false
+                }
+                None => !self.probe.checked(&c.path) && c.since.elapsed() < ATTACH_WAIT,
+            }
+        });
+        self.attach_checks = checks;
+        if let Some(key) = ask {
+            if !self.session().is_running() {
+                self.ask(key, true, fx);
+            }
+        }
     }
 
     pub(crate) fn convert_enabled(&self) -> Enabled {
@@ -78,11 +168,15 @@ impl AppController {
 
     /// Ask which format `[scsi.KEY]` converts to.
     pub(crate) fn ask_convert(&mut self, key: u8, fx: &mut Vec<Effect>) {
+        self.ask(key, false, fx);
+    }
+
+    fn ask(&mut self, key: u8, attached: bool, fx: &mut Vec<Effect>) {
         if let Enabled::No(why) = self.convert_enabled() {
             fx.push(Effect::Toast(why));
             return;
         }
-        let Some((label, _, h)) = self.chd_disk(key).filter(|(_, _, h)| h.compressed()) else {
+        let Some((label, path, h)) = self.chd_disk(key).filter(|(_, _, h)| h.compressed()) else {
             fx.push(Effect::Toast(t!("convert-not-compressed")));
             return;
         };
@@ -103,7 +197,13 @@ impl AppController {
         message.push_str(&t!("convert-uncompressed-body", size = human(h.logical_bytes)));
         message.push_str("\n\n");
         message.push_str(&t!("convert-outro"));
-        choices.push(t!("common-cancel"));
+        if attached {
+            message.push_str("\n\n");
+            message.push_str(&t!("convert-keep-body"));
+            choices.push(t!("convert-keep"));
+        } else {
+            choices.push(t!("common-cancel"));
+        }
         fx.push(Effect::Choose(ChoiceSpec {
             purpose: CONVERT_FORMAT,
             title: t!("convert-title", disk = label.as_str()),
@@ -113,14 +213,20 @@ impl AppController {
             destructive: Vec::new(),
             choices,
         }));
-        self.pending_convert = Some(Asked { key, formats });
+        self.pending_convert = Some(Asked { key, formats, attached: attached.then_some(path) });
     }
 
     /// The format question's answer.
     pub(crate) fn convert_answer(&mut self, a: &Answer, fx: &mut Vec<Effect>) -> bool {
         let Answer::Chose { purpose: CONVERT_FORMAT, index } = a else { return false };
         let Some(asked) = self.pending_convert.take() else { return true };
-        let Some(&format) = asked.formats.get(*index) else { return true };
+        let Some(&format) = asked.formats.get(*index) else {
+            // Keep As Is, after attaching: never ask about this disk again.
+            if let Some(path) = asked.attached {
+                self.decline_path(path, fx);
+            }
+            return true;
+        };
         self.start_convert(asked.key, format, fx);
         true
     }
@@ -161,6 +267,7 @@ impl AppController {
 
     /// A finished conversion's message; called every tick.
     pub(crate) fn convert_tick(&mut self, fx: &mut Vec<Effect>) {
+        self.attach_tick(fx);
         let Some(c) = &mut self.conversion else { return };
         let snap = c.job.snapshot();
         if snap.is_running() {
@@ -190,6 +297,9 @@ impl AppController {
 pub(crate) fn action_for(id: &str) -> Option<AppAction> {
     if id == CANCEL_ID {
         return Some(AppAction::CancelConversion);
+    }
+    if let Some(key) = id.strip_prefix(super::ids::item::DECLINE_CONVERT).and_then(|k| k.parse().ok()) {
+        return Some(AppAction::DeclineConvert { key });
     }
     let key = id.strip_prefix(super::ids::item::CONVERT_DISK)?.parse().ok()?;
     Some(AppAction::ConvertDisk { key })

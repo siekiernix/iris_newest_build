@@ -296,6 +296,9 @@ impl AppController {
         if id.starts_with(item::CONVERT_DISK) {
             return self.convert_enabled();
         }
+        if id.starts_with(item::DECLINE_CONVERT) {
+            return Enabled::Yes;
+        }
         if id == super::convert::CANCEL_ID {
             return Enabled::Yes;
         }
