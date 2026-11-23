@@ -59,19 +59,16 @@ fn load(p: &Picture) -> Option<Retained<NSImage>> {
 }
 
 /// A picture in a frame of `w` x `h`, or the machine's glyph when there is none.
-fn picture(mtm: MainThreadMarker, p: Option<&Picture>, w: f64, h: f64, fallback: &str) -> Retained<NSImageView> {
+/// `p`, or when there is none `fallback` (drawn at its own size, tinted).
+fn picture(mtm: MainThreadMarker, p: Option<&Picture>, w: f64, h: f64, fallback: Option<Retained<NSImage>>) -> Retained<NSImageView> {
     let iv = NSImageView::new(mtm);
     iv.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
     match p.and_then(load) {
         Some(img) => iv.setImage(Some(&img)),
         None => {
-            if let Some(img) = glyphs::symbol(fallback, "") {
+            if let Some(img) = fallback {
                 iv.setImage(Some(&img));
                 iv.setImageScaling(NSImageScaling::ScaleNone);
-                iv.setSymbolConfiguration(Some(&objc2_app_kit::NSImageSymbolConfiguration::configurationWithPointSize_weight(
-                    (h / 3.0).min(64.0),
-                    0.0,
-                )));
                 iv.setContentTintColor(Some(&NSColor::tertiaryLabelColor()));
             }
         }
@@ -104,7 +101,7 @@ fn preview(mtm: MainThreadMarker, o: &Overview) -> Retained<NSView> {
     frame.topAnchor().constraintEqualToAnchor(&holder.topAnchor()).setActive(true);
     frame.bottomAnchor().constraintEqualToAnchor(&holder.bottomAnchor()).setActive(true);
     let pic = match o.preview.as_ref() {
-        Some(p) => picture(mtm, Some(p), WIDTH, h, ""),
+        Some(p) => picture(mtm, Some(p), WIDTH, h, None),
         None => {
             let iv = NSImageView::new(mtm);
             iv.widthAnchor().constraintEqualToConstant(WIDTH).setActive(true);
@@ -230,7 +227,7 @@ fn saved_states(mtm: MainThreadMarker, o: &Overview) -> Vec<Retained<NSView>> {
     let now = timeline_row(
         mtm,
         "circle.circle",
-        picture(mtm, o.preview.as_ref(), tw, th, glyphs::machine_symbol(o.icon)),
+        picture(mtm, o.preview.as_ref(), tw, th, glyphs::machine_image(o.icon, th * 0.8, &o.spec)),
         &t!("ov-current-state"),
         &[t!("ov-not-running"), t!("ov-save-while-running")],
         Vec::new(),
@@ -251,7 +248,7 @@ fn saved_states(mtm: MainThreadMarker, o: &Overview) -> Vec<Retained<NSView>> {
         rows.push(timeline_row(
             mtm,
             "circle",
-            picture(mtm, s.picture.as_ref(), tw, th, "square.stack.3d.up"),
+            picture(mtm, s.picture.as_ref(), tw, th, glyphs::symbol_at("square.stack.3d.up", th / 3.0)),
             &s.name,
             &[t!("ov-saved-at", when = when.as_str()), human(s.bytes)],
             buttons,

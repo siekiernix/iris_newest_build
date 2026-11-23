@@ -110,7 +110,7 @@ fn cell(mtm: MainThreadMarker, item: &Item) -> Retained<NSView> {
         }
         Item::Machine(m) => {
             let image = NSImageView::new(mtm);
-            if let Some(img) = glyphs::symbol(glyphs::machine_symbol(m.icon), &m.subtitle) {
+            if let Some(img) = glyphs::machine_image(m.icon, 32.0, &m.subtitle) {
                 image.setImage(Some(&img));
             }
             image.setContentTintColor(Some(&NSColor::secondaryLabelColor()));

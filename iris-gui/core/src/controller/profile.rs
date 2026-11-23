@@ -32,8 +32,9 @@ impl Family {
     }
 }
 
-/// A picture of the machine for the library and the summary. Each shell maps
-/// these to its own images; `svg_name` names the shared fallback set.
+/// A picture of the machine for the library and the summary: a front view in
+/// black line art (`iris-gui/assets/icons/<svg_name>.svg`), which every shell
+/// tints to its own theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MachineIcon {
     Indy,
@@ -51,22 +52,57 @@ pub enum MachineIcon {
 }
 
 impl MachineIcon {
+    /// The file stem in `iris-gui/assets/icons/`. Machines in the same case
+    /// share one (Indigo2 IMPACT, Onyx2, Onyx 3000).
     pub fn svg_name(self) -> &'static str {
         match self {
             MachineIcon::Indy => "machine-indy",
-            MachineIcon::Indigo2 => "machine-indigo2",
-            MachineIcon::Indigo2Impact => "machine-indigo2-impact",
+            MachineIcon::Indigo2 | MachineIcon::Indigo2Impact => "machine-indigo2",
             MachineIcon::O2 => "machine-o2",
             MachineIcon::Octane => "machine-octane",
             MachineIcon::Origin200 => "machine-origin200",
-            MachineIcon::Origin2000 => "machine-origin2000",
-            MachineIcon::Onyx2 => "machine-onyx2",
+            MachineIcon::Origin2000 | MachineIcon::Onyx2 => "machine-origin2000",
             MachineIcon::Fuel => "machine-fuel",
             MachineIcon::Tezro => "machine-tezro",
-            MachineIcon::Origin3200 => "machine-origin3200",
-            MachineIcon::Onyx3000 => "machine-onyx3000",
+            MachineIcon::Origin3200 | MachineIcon::Onyx3000 => "machine-origin3200",
         }
     }
+
+    /// The SVG itself: 64×64, black on transparent, so a shell can use it
+    /// as a mask or template and colour it.
+    pub fn svg(self) -> &'static str {
+        macro_rules! art {
+            ($stem:literal) => {
+                include_str!(concat!("../../../assets/icons/", $stem, ".svg"))
+            };
+        }
+        match self {
+            MachineIcon::Indy => art!("machine-indy"),
+            MachineIcon::Indigo2 | MachineIcon::Indigo2Impact => art!("machine-indigo2"),
+            MachineIcon::O2 => art!("machine-o2"),
+            MachineIcon::Octane => art!("machine-octane"),
+            MachineIcon::Origin200 => art!("machine-origin200"),
+            MachineIcon::Origin2000 | MachineIcon::Onyx2 => art!("machine-origin2000"),
+            MachineIcon::Fuel => art!("machine-fuel"),
+            MachineIcon::Tezro => art!("machine-tezro"),
+            MachineIcon::Origin3200 | MachineIcon::Onyx3000 => art!("machine-origin3200"),
+        }
+    }
+
+    pub const ALL: [MachineIcon; 12] = [
+        MachineIcon::Indy,
+        MachineIcon::Indigo2,
+        MachineIcon::Indigo2Impact,
+        MachineIcon::O2,
+        MachineIcon::Octane,
+        MachineIcon::Origin200,
+        MachineIcon::Origin2000,
+        MachineIcon::Onyx2,
+        MachineIcon::Fuel,
+        MachineIcon::Tezro,
+        MachineIcon::Origin3200,
+        MachineIcon::Onyx3000,
+    ];
 }
 
 /// What the GUI needs to know about a profile beyond the core's tables.
@@ -109,6 +145,19 @@ pub fn traits(profile: MachineProfile) -> &'static ProfileTraits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_machine_picture_is_its_named_file() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/icons");
+        for icon in MachineIcon::ALL {
+            let file = std::fs::read_to_string(dir.join(format!("{}.svg", icon.svg_name()))).unwrap();
+            assert_eq!(icon.svg(), file, "{icon:?}");
+            assert!(file.contains(r#"viewBox="0 0 64 64""#), "{icon:?}");
+        }
+        for t in TRAITS {
+            assert!(MachineIcon::ALL.contains(&t.icon));
+        }
+    }
 
     #[test]
     fn every_profile_has_exactly_one_row() {

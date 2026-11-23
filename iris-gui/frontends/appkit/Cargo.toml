@@ -40,3 +40,6 @@ objc2-app-kit = "0.3"
 objc2-quartz-core = { version = "0.3", features = ["objc2-metal"] }
 objc2-metal = "0.3"
 dispatch2 = "0.3"
+# Draws the shared machine pictures (iris-gui/assets/icons/machine-*.svg);
+# line art only, so no text, fonts or embedded images.
+resvg = { version = "0.50", default-features = false }

@@ -56,6 +56,9 @@ hashes are given where a change is easiest to understand by reading the commit.
   capturing it, so the guest mouse works over RustDesk and other remote
   desktops.
 - Quitting while a machine runs now asks first, in both front ends.
+- IRIS Preview: the library and the machine page show a line drawing of each
+  machine's front (Indy, Indigo2, O2, Octane, Fuel, Tezro, Origin and Onyx)
+  instead of a generic computer.
 
 ### jitv2 flushes
 
