@@ -16,15 +16,15 @@ jobs:
       - name: Install Rust Nightly
         uses: dtolnay/rust-toolchain@nightly
 
-      - name: Build iris-gui (Release, premiere + bundled + wgpu + pcap)
+      - name: Build iris-gui (Release, premiere + bundled + wgpu)
         env:
           LIBCHDMAN_FORCE_SOURCE: "1"
-        run: cargo build -p iris-gui --release --features premiere,bundled,wgpu,pcap
+        run: cargo build -p iris-gui --release --features premiere,bundled,wgpu
 
-      - name: Build iris CLI (Release, lightning + gpujit + wgpu + pcap)
+      - name: Build iris CLI (Release, lightning + gpujit + wgpu)
         env:
           LIBCHDMAN_FORCE_SOURCE: "1"
-        run: cargo build --release --features lightning,gpujit,wgpu,pcap
+        run: cargo build --release --features lightning,gpujit,wgpu
 
       - name: Upload Windows Binaries
         uses: actions/upload-artifact@v4
