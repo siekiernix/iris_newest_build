@@ -1,7 +1,7 @@
-name: Build IRIS Windows Executable
+name: Build IRIS Windows Release-like
 
 on:
-  workflow_dispatch: # Pozwala uruchomić budowanie ręcznie jednym kliknięciem
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,11 +16,21 @@ jobs:
       - name: Install Rust Nightly
         uses: dtolnay/rust-toolchain@nightly
 
-      - name: Build IRIS (Release)
-        run: cargo build --release
+      - name: Build iris-gui (Release, premiere + bundled)
+        env:
+          LIBCHDMAN_FORCE_SOURCE: "1"
+        run: cargo build -p iris-gui --release --features premiere,bundled
 
-      - name: Upload Windows Executables
+      - name: Build iris CLI (Release, lightning + gpujit)
+        env:
+          LIBCHDMAN_FORCE_SOURCE: "1"
+        run: cargo build --release --features lightning,gpujit
+
+      - name: Upload Windows Binaries
         uses: actions/upload-artifact@v4
         with:
-          name: iris-windows-build
-          path: target/release/*.exe
+          name: iris-windows-gui-and-cli
+          path: |
+            target/release/iris-gui.exe
+            target/release/iris.exe
+            target/release/*.dll
